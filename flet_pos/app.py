@@ -1,4 +1,5 @@
 import os
+import sys
 import flet as ft
 
 from flet_pos.db import DB
@@ -34,6 +35,7 @@ class FletMarketApp:
         self.page.bgcolor = ft.Colors.GREY_100
         self.page.window_min_width = 960
         self.page.window_min_height = 640
+        self._set_window_icon()
 
         self.current_user = None
         self.pages = {}
@@ -48,6 +50,35 @@ class FletMarketApp:
         self.page.update()
 
         self._show_login()
+
+    def _set_window_icon(self):
+        """Uygulama penceresi/gorev cubugu simgesini ayarla."""
+        candidates = []
+        if getattr(sys, "frozen", False):
+            base = getattr(sys, "_MEIPASS", "")
+            if base:
+                candidates.extend(
+                    [
+                        os.path.join(base, "assets", "temelmarket.ico"),
+                        os.path.join(base, "assets", "temelmarket_icon.png"),
+                    ]
+                )
+        candidates.extend(
+            [
+                os.path.join(self.base_dir, "assets", "temelmarket.ico"),
+                os.path.join(self.base_dir, "assets", "temelmarket_icon.png"),
+            ]
+        )
+        # Windows desktop için .ico daha güvenilir
+        ico_first = [p for p in candidates if p.lower().endswith(".ico")]
+        other = [p for p in candidates if not p.lower().endswith(".ico")]
+        icon_path = next((p for p in ico_first + other if p and os.path.exists(p)), "")
+        if not icon_path:
+            return
+        try:
+            self.page.window.icon = os.path.abspath(icon_path)
+        except Exception:
+            pass
 
     def _build_pages(self):
         self.pages["pos"] = POSPage(
