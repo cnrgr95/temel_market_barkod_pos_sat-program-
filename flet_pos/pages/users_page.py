@@ -4,7 +4,6 @@ import flet as ft
 
 class UsersPage(ft.Container):
     def __init__(self, db):
-        super().__init__(expand=True)
         self.db = db
         self._editing_id: int | None = None
 
@@ -73,7 +72,7 @@ class UsersPage(ft.Container):
             rows=[],
         )
 
-        self.content = ft.Column(
+        content = ft.Column(
             expand=True,
             scroll=ft.ScrollMode.AUTO,
             spacing=14,
@@ -121,24 +120,56 @@ class UsersPage(ft.Container):
                 ),
             ],
         )
-        self.refresh()
+        super().__init__(expand=True, content=content)
 
     def _safe_update(self):
+        if self.page is None:
+            return
         try:
-            _ = self.page
             self.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _on_role_changed(self):
         role = self.dd_role.value or "KASIYER"
+        all_switches = [
+            self.sw_discount, self.sw_price, self.sw_return, self.sw_reports, self.sw_sales_history,
+            self.sw_products, self.sw_stock, self.sw_customers, self.sw_suppliers,
+            self.sw_cash, self.sw_users, self.sw_backup, self.sw_hardware,
+        ]
         if role == "ADMIN":
-            for sw in [
-                self.sw_discount, self.sw_price, self.sw_return, self.sw_reports, self.sw_sales_history,
-                self.sw_products, self.sw_stock, self.sw_customers, self.sw_suppliers,
-                self.sw_cash, self.sw_users, self.sw_backup, self.sw_hardware,
-            ]:
+            for sw in all_switches:
                 sw.value = True
+        elif role == "YONETICI":
+            # Yönetici: fiyat, stok, ürün, müşteri, tedarikçi, kasa, yedek dahil; kullanıcı yönetimi hariç
+            self.sw_discount.value = True
+            self.sw_price.value = True
+            self.sw_return.value = True
+            self.sw_reports.value = True
+            self.sw_sales_history.value = True
+            self.sw_products.value = True
+            self.sw_stock.value = True
+            self.sw_customers.value = True
+            self.sw_suppliers.value = True
+            self.sw_cash.value = True
+            self.sw_users.value = False
+            self.sw_backup.value = True
+            self.sw_hardware.value = False
+        elif role == "KASIYER":
+            # Kasiyer: sadece indirim, iade, müşteri görme, satış geçmişi
+            self.sw_discount.value = True
+            self.sw_price.value = False
+            self.sw_return.value = True
+            self.sw_reports.value = False
+            self.sw_sales_history.value = True
+            self.sw_products.value = False
+            self.sw_stock.value = False
+            self.sw_customers.value = True
+            self.sw_suppliers.value = False
+            self.sw_cash.value = False
+            self.sw_users.value = False
+            self.sw_backup.value = False
+            self.sw_hardware.value = False
         self._safe_update()
 
     def _snack(self, text: str):

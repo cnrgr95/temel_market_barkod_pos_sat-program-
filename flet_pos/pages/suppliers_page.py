@@ -3,7 +3,6 @@ import flet as ft
 
 class SuppliersPage(ft.Container):
     def __init__(self, db):
-        super().__init__(expand=True, padding=10)
         self.db = db
         self._editing_id: int | None = None
 
@@ -77,7 +76,7 @@ class SuppliersPage(ft.Container):
         self._all_rows = []
 
         # ── Layout ────────────────────────────────────────────────────────
-        self.content = ft.Column(
+        content = ft.Column(
             expand=True,
             spacing=10,
             scroll=ft.ScrollMode.AUTO,
@@ -153,14 +152,16 @@ class SuppliersPage(ft.Container):
             ],
         )
 
-        self.refresh()
+        super().__init__(expand=True, padding=10, content=content)
 
     # ── Yardımcı ──────────────────────────────────────────────────────────
 
     def _safe_update(self):
         try:
+            if self.page is None:
+                return
             self.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _snack(self, text: str, color=ft.Colors.INDIGO_700):

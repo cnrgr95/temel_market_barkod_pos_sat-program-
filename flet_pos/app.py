@@ -4,6 +4,7 @@ import flet as ft
 
 from flet_pos.db import DB
 from flet_pos.pages.backup_page import BackupPage
+from flet_pos.pages.barcode_page import BarcodePage
 from flet_pos.pages.cash_page import CashPage
 from flet_pos.pages.customers_page import CustomersPage
 from flet_pos.pages.hardware_page import HardwarePage
@@ -28,8 +29,9 @@ class FletMarketApp:
             base_dir=self.base_dir,
             db_path=os.path.join(self.base_dir, "market.db"),
             backup_dir=os.path.join(self.base_dir, "backups"),
-            interval_seconds=7200,
+            interval_seconds=int(self.db.get_setting("backup_interval_minutes", "120") or "120") * 60,
             google_drive_dir=self.db.get_setting("google_drive_backup_dir", ""),
+            target_mode=self.db.get_setting("backup_target_mode", "BOTH"),
         )
         self.backup_manager.start()
 
@@ -53,6 +55,7 @@ class FletMarketApp:
         self.content_host = ft.Container(expand=True)
         self.page.on_resize = self._on_page_resized
         self.page.on_keyboard_event = self._on_keyboard
+        self.page.window.on_close = self._on_window_close
 
         # Tüm sayfa içeriği bu tek root container içinde swap edilir
         self._root = ft.Container(expand=True)
@@ -99,6 +102,7 @@ class FletMarketApp:
         )
         products_page = ProductsPage(self.db, self.media_dir, on_products_changed=self._products_changed)
         self.pages["products"] = products_page
+        self.pages["barcode_center"] = BarcodePage(self.db, self.base_dir)
         self.pages["stock"] = StockPage(self.db)
         self.pages["customers"] = CustomersPage(self.db)
         self.pages["suppliers"] = SuppliersPage(self.db)
@@ -113,6 +117,7 @@ class FletMarketApp:
         destinations = [
             ("Hizli Satis", "pos", ft.Icons.POINT_OF_SALE),
             ("Urunler", "products", ft.Icons.INVENTORY_2),
+            ("Barkod / Etiket", "barcode_center", ft.Icons.QR_CODE_2),
             ("Stok", "stock", ft.Icons.WAREHOUSE),
             ("Cari Hesap", "customers", ft.Icons.PEOPLE_ALT),
             ("Tedarikciler", "suppliers", ft.Icons.LOCAL_SHIPPING),
@@ -182,6 +187,12 @@ class FletMarketApp:
                             ], spacing=4),
                         ),
                         ft.IconButton(
+                            ft.Icons.KEY,
+                            icon_color=ft.Colors.WHITE,
+                            tooltip="Sifremi Degistir",
+                            on_click=lambda _: self._open_change_password_dialog(),
+                        ),
+                        ft.IconButton(
                             ft.Icons.LOGOUT, icon_color=ft.Colors.WHITE,
                             tooltip="Cikis Yap",
                             on_click=lambda _: self._show_login(),
@@ -242,6 +253,7 @@ class FletMarketApp:
             return True
         mapping = {
             "products": "can_products",
+            "barcode_center": "can_products",
             "stock": "can_stock",
             "customers": "can_customers",
             "suppliers": "can_suppliers",
@@ -264,6 +276,7 @@ class FletMarketApp:
         pos.invalidate_product_cache()
         if self._active_nav_key == "pos":
             pos.refresh_products_grid()
+        self._mark_or_refresh("barcode_center")
         if "stock" in self.pages:
             self._mark_or_refresh("stock")
 
@@ -294,10 +307,20 @@ class FletMarketApp:
             page.invalidate_product_cache()
             page.refresh_products_grid()
             return
+        if key == "products":
+            # ProductsPage has no single refresh() — call its data-loading methods
+            if hasattr(page, "refresh_table"):
+                page.refresh_table(force_reload=True)
+            if hasattr(page, "_load_suppliers"):
+                page._load_suppliers()
+            if hasattr(page, "_refresh_taxonomy_lists"):
+                page._refresh_taxonomy_lists()
+            return
         if hasattr(page, "refresh"):
             page.refresh()
         elif hasattr(page, "refresh_table"):
             page.refresh_table(force_reload=True)
+
 
     def _open_product_add_from_pos(self, barcode: str):
         if not self._has_access("products"):
@@ -346,6 +369,12 @@ class FletMarketApp:
     def show(self, key: str):
         self.content_host.content = self.pages[key]
         self.page.update()
+        # Trigger initial data load on first visit (did_mount is not called on
+        # ft.Container subclasses in Flet 0.84 – we simulate it here)
+        if key not in self._shown_pages:
+            self._shown_pages.add(key)
+            self._refresh_page_data(key)
+            self.page.update()  # Force full repaint after data is loaded
 
     def _show_login(self):
         username = ft.TextField(
@@ -414,11 +443,101 @@ class FletMarketApp:
         )
         self.page.update()
 
+    def _on_window_close(self, _e=None):
+        """Uygulama kapatılırken otomatik yedek al."""
+        try:
+            if self.backup_manager:
+                self.backup_manager.backup_now(prefix="exit")
+        except Exception:
+            pass
+
+    def _open_change_password_dialog(self):
+        if not self.current_user:
+            return
+        txt_current = ft.TextField(
+            label="Mevcut Şifre",
+            password=True,
+            can_reveal_password=True,
+            width=300,
+            autofocus=True,
+        )
+        txt_new = ft.TextField(
+            label="Yeni Şifre",
+            password=True,
+            can_reveal_password=True,
+            width=300,
+        )
+        txt_confirm = ft.TextField(
+            label="Yeni Şifre (Tekrar)",
+            password=True,
+            can_reveal_password=True,
+            width=300,
+        )
+        lbl_error = ft.Text("", color=ft.Colors.RED_600, size=12)
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Şifremi Değiştir"),
+            content=ft.Container(
+                width=340,
+                content=ft.Column(
+                    [txt_current, txt_new, txt_confirm, lbl_error],
+                    spacing=10,
+                    tight=True,
+                ),
+            ),
+        )
+
+        def do_change(_e):
+            current = (txt_current.value or "").strip()
+            new_pw = (txt_new.value or "").strip()
+            confirm = (txt_confirm.value or "").strip()
+            if not current or not new_pw:
+                lbl_error.value = "Tüm alanları doldurunuz"
+                self.page.update()
+                return
+            if new_pw != confirm:
+                lbl_error.value = "Yeni şifreler eşleşmiyor"
+                self.page.update()
+                return
+            try:
+                self.db.change_user_password(
+                    self.current_user["id"], current, new_pw
+                )
+                dlg.open = False
+                self.page.update()
+                self.page.snack_bar = ft.SnackBar(
+                    ft.Text("Şifre başarıyla güncellendi"), open=True
+                )
+                self.page.update()
+            except ValueError as ex:
+                lbl_error.value = str(ex)
+                self.page.update()
+
+        def cancel(_e):
+            dlg.open = False
+            self.page.update()
+
+        dlg.actions = [
+            ft.TextButton("İptal", on_click=cancel),
+            ft.ElevatedButton(
+                "Değiştir",
+                icon=ft.Icons.LOCK_RESET,
+                on_click=do_change,
+            ),
+        ]
+
+        if dlg not in self.page.overlay:
+            self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
     def _start_main_shell(self):
         # Overlay bozulmasın — page controls hiç temizlenmez,
         # sadece _root.content swap edilir
         self.pages = {}
         self._dirty_pages = set()
+        self._shown_pages = set()          # tracks which pages got their initial data load
         self.content_host = ft.Container(
             expand=True,
             padding=ft.padding.only(left=10, right=10, bottom=10, top=6),

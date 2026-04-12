@@ -5,6 +5,7 @@ import unittest
 import uuid
 
 from flet_pos.db import DB
+from flet_pos.services.barcode import ean13_svg, generate_ean13, is_valid_ean13
 from flet_pos.services.backup import BackupManager
 
 
@@ -128,6 +129,27 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertEqual(result.error, "")
         self.assertTrue(result.drive_path, "Drive path was not set")
         self.assertTrue(os.path.exists(result.drive_path), result.drive_path)
+        self.assertTrue(manager.list_logs(5))
+        manager.set_interval_minutes(5)
+        self.assertEqual(manager.interval_seconds, 300)
+
+    def test_generated_barcode_registry_and_svg_output(self):
+        db = DB(self._temp_db_path())
+        barcode = generate_ean13("869")
+
+        created = db.add_generated_barcode(barcode, label_name="Test Etiket", prefix="869", note="Deneme")
+        self.assertTrue(created)
+        self.assertTrue(db.barcode_exists(barcode))
+        self.assertFalse(db.add_generated_barcode(barcode, label_name="Tekrar"))
+
+        rows = db.list_generated_barcodes(10)
+        self.assertEqual(rows[0][1], barcode)
+        self.assertEqual(rows[0][2], "Test Etiket")
+        self.assertTrue(is_valid_ean13(barcode))
+
+        svg = ean13_svg(barcode)
+        self.assertIn("<svg", svg)
+        self.assertIn(barcode, svg)
 
 
 if __name__ == "__main__":

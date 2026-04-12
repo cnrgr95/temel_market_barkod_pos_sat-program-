@@ -1,0 +1,16 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Windows",
+  "include": [
+    "flet_pos",
+    "main.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "dist_final",
+    "backups",
+    "installer"
+  ]
+}

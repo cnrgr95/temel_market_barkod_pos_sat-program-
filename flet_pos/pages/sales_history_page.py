@@ -4,7 +4,6 @@ import flet as ft
 
 class SalesHistoryPage(ft.Container):
     def __init__(self, db):
-        super().__init__(expand=True)
         self.db = db
 
         today = datetime.now()
@@ -64,7 +63,7 @@ class SalesHistoryPage(ft.Container):
             controls=[ft.Text("Satisa tiklayin...", color=ft.Colors.BLUE_GREY_400, italic=True)],
         )
 
-        self.content = ft.Column(
+        content = ft.Column(
             expand=True, scroll=ft.ScrollMode.AUTO, spacing=14,
             controls=[
                 ft.Text("Satis Hareketleri", size=26, weight=ft.FontWeight.BOLD),
@@ -118,7 +117,7 @@ class SalesHistoryPage(ft.Container):
                 ]),
             ],
         )
-        self.refresh()
+        super().__init__(expand=True, content=content)
 
     def _summary_card(self, title: str, lbl: ft.Text, color) -> ft.Container:
         return ft.Container(
@@ -156,9 +155,10 @@ class SalesHistoryPage(ft.Container):
 
     def _safe_update(self):
         try:
-            _ = self.page
+            if self.page is None:
+                return
             self.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     # ── Veri çek ─────────────────────────────────────────────────────────────

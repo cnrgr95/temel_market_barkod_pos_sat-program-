@@ -3,8 +3,7 @@ import flet as ft
 
 class HardwarePage(ft.Container):
     def __init__(self):
-        super().__init__(expand=True)
-        self.content = ft.Column(
+        content = ft.Column(
             expand=True,
             controls=[
                 ft.Text("Donanim Entegrasyonu", size=24, weight=ft.FontWeight.BOLD),
@@ -17,3 +16,4 @@ class HardwarePage(ft.Container):
                 ft.Text("Not: Gercek surucu/port baglantilari bir sonraki asamada eklenecek.", color=ft.Colors.BLUE_GREY_700),
             ],
         )
+        super().__init__(expand=True, content=content)

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c \"import inspect, flet; print\\([p for p in inspect.signature\\(flet.Tabs.__init__\\).parameters]\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ':*)"
+    ]
+  }
+}

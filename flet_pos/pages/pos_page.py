@@ -1,4 +1,7 @@
 import os
+import shutil
+import threading
+import json
 from datetime import datetime
 import inspect
 import asyncio
@@ -12,7 +15,6 @@ _BANKNOTES = [1, 5, 10, 20, 50, 100, 200]
 
 class POSPage(ft.Container):
     def __init__(self, db, on_sale_completed=None, current_user=None, on_unknown_barcode=None):
-        super().__init__(expand=True, padding=0)
         self.db = db
         self.on_sale_completed = on_sale_completed
         self.current_user = current_user or {}
@@ -25,6 +27,13 @@ class POSPage(ft.Container):
         self._products_by_barcode: dict[str, tuple] = {}
         self._products_by_id: dict[int, tuple] = {}
         self._grid_filter_value = ""
+        self._quick_filter_value = ""
+        self._quick_limit = 36
+        self._media_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "product_images",
+        )
+        os.makedirs(self._media_dir, exist_ok=True)
 
         # 4 bağımsız sepet
         self._baskets: list[list[dict]] = [[], [], [], []]
@@ -123,6 +132,9 @@ class POSPage(ft.Container):
         )
 
         # Sepet listesi (sağ panel)
+        self.lbl_cart_title = ft.Text("Aktif Sepet 1", size=16, weight=ft.FontWeight.W_700,
+                                      color=ft.Colors.INDIGO_800)
+        self.lbl_cart_summary = ft.Text("0 urun", size=13, color=ft.Colors.BLUE_GREY_600)
         self.cart_list = ft.Column(expand=True, scroll=ft.ScrollMode.AUTO, spacing=3)
 
         # Ürün arama
@@ -165,24 +177,43 @@ class POSPage(ft.Container):
 
         # Ürün grid
         self.products_grid = ft.GridView(
-            expand=True, max_extent=160, child_aspect_ratio=0.9,
+            expand=True, max_extent=175, child_aspect_ratio=0.78,
             spacing=4, run_spacing=4,
+        )
+        self.txt_quick_filter = ft.TextField(
+            hint_text="Hizli urun ara",
+            prefix_icon=ft.Icons.SEARCH,
+            bgcolor=ft.Colors.WHITE,
+            border_radius=8,
+            on_change=lambda _: self._refresh_quick_products(),
+        )
+        self.quick_products_grid = ft.GridView(
+            expand=True,
+            max_extent=170,
+            child_aspect_ratio=1.6,
+            spacing=8,
+            run_spacing=8,
         )
 
         # ── Layout ───────────────────────────────────────────────────────────
         self._build_basket_tabs()
-        self.content = ft.Row(
+        self.quick_side_panel = self._build_quick_side_panel()
+        content = ft.Row(
             expand=True, spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.START,
             controls=[
                 self._build_left_panel(),
                 ft.VerticalDivider(width=1, color=ft.Colors.BLUE_GREY_200),
                 self._build_right_panel(),
+                self.quick_side_panel,
             ],
         )
 
         self.refresh_customers()
         self.refresh_products_grid()
+        self._refresh_quick_products()
         self.set_responsive(1280)
+        super().__init__(expand=True, padding=0, content=content)
 
     # ── Sol panel ─────────────────────────────────────────────────────────────
 
@@ -229,6 +260,8 @@ class POSPage(ft.Container):
                 scroll=ft.ScrollMode.AUTO,
                 spacing=8,
                 expand=True,
+                alignment=ft.MainAxisAlignment.START,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                 controls=[
                     # ── Toplam kutusu ─────────────────────────────
                     ft.Container(
@@ -242,6 +275,11 @@ class POSPage(ft.Container):
                             self.lbl_total,
                         ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.END),
                     ),
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=10, vertical=2),
+                        content=ft.Text("SEPETLER", size=10, color=ft.Colors.BLUE_GREY_500,
+                                        weight=ft.FontWeight.W_700),
+                    ),
                     # ── Sepet sekmeleri ────────────────────────────
                     ft.Container(
                         padding=ft.padding.symmetric(horizontal=8),
@@ -250,6 +288,11 @@ class POSPage(ft.Container):
                     # ── Barkod + Adet ─────────────────────────────
                     # dd_product_picker görünmez — sadece senkronizasyon için tutulur
                     ft.Container(content=self.dd_product_picker, visible=False, height=0),
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=10, vertical=2),
+                        content=ft.Text("ODEME BILGILERI", size=10, color=ft.Colors.BLUE_GREY_500,
+                                        weight=ft.FontWeight.W_700),
+                    ),
                     # ── İskonto ───────────────────────────────────
                     ft.Container(
                         bgcolor=ft.Colors.WHITE,
@@ -296,6 +339,35 @@ class POSPage(ft.Container):
         )
 
     # ── Sağ panel ─────────────────────────────────────────────────────────────
+
+    def _build_quick_side_panel(self):
+        return ft.Container(
+            width=300,
+            bgcolor=ft.Colors.BLUE_GREY_50,
+            border=ft.border.only(left=ft.BorderSide(1, ft.Colors.BLUE_GREY_200)),
+            padding=ft.padding.all(8),
+            content=ft.Column(
+                expand=True,
+                spacing=8,
+                controls=[
+                    ft.Container(
+                        bgcolor=ft.Colors.WHITE,
+                        border_radius=8,
+                        border=ft.border.all(1, ft.Colors.BLUE_GREY_200),
+                        padding=ft.padding.all(8),
+                        content=self.txt_quick_filter,
+                    ),
+                    ft.Container(
+                        expand=True,
+                        bgcolor=ft.Colors.WHITE,
+                        border_radius=8,
+                        border=ft.border.all(1, ft.Colors.BLUE_GREY_200),
+                        padding=ft.padding.all(6),
+                        content=self.quick_products_grid,
+                    ),
+                ],
+            ),
+        )
 
     def _build_right_panel(self):
         def _pay_btn(label, icon, color, action):
@@ -359,17 +431,17 @@ class POSPage(ft.Container):
         cart_header = ft.Container(
             bgcolor=ft.Colors.INDIGO_50,
             border=ft.border.only(bottom=ft.BorderSide(1, ft.Colors.INDIGO_100)),
-            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
             content=ft.Row([
-                ft.Text("ÜRÜN ADI", size=11, weight=ft.FontWeight.W_700,
+                ft.Text("ÜRÜN", size=12, weight=ft.FontWeight.W_700,
                         color=ft.Colors.INDIGO_800, expand=True),
-                ft.Text("MİKTAR", size=11, weight=ft.FontWeight.W_700,
-                        color=ft.Colors.INDIGO_800, width=65, text_align=ft.TextAlign.RIGHT),
-                ft.Text("FİYAT", size=11, weight=ft.FontWeight.W_700,
-                        color=ft.Colors.INDIGO_800, width=70, text_align=ft.TextAlign.RIGHT),
-                ft.Text("TUTAR", size=11, weight=ft.FontWeight.W_700,
-                        color=ft.Colors.INDIGO_800, width=75, text_align=ft.TextAlign.RIGHT),
-                ft.Container(width=44),
+                ft.Text("MİKTAR", size=12, weight=ft.FontWeight.W_700,
+                        color=ft.Colors.INDIGO_800, width=95, text_align=ft.TextAlign.RIGHT),
+                ft.Text("BİRİM FİYAT", size=12, weight=ft.FontWeight.W_700,
+                        color=ft.Colors.INDIGO_800, width=100, text_align=ft.TextAlign.RIGHT),
+                ft.Text("TUTAR", size=12, weight=ft.FontWeight.W_700,
+                        color=ft.Colors.INDIGO_800, width=105, text_align=ft.TextAlign.RIGHT),
+                ft.Container(width=78),
             ]),
         )
 
@@ -406,6 +478,24 @@ class POSPage(ft.Container):
                 self.tabs_category,
             ], spacing=4),
         )
+        cart_title = ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.only(bottom=ft.BorderSide(2, ft.Colors.INDIGO_200)),
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+            content=ft.Row(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.INDIGO_700, size=20),
+                            self.lbl_cart_title,
+                        ],
+                        spacing=8,
+                    ),
+                    self.lbl_cart_summary,
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+        )
 
         return ft.Container(
             expand=True,
@@ -414,6 +504,7 @@ class POSPage(ft.Container):
                 expand=True, spacing=0,
                 controls=[
                     action_bar,
+                    cart_title,
                     cart_header,
                     # Sepet listesi — expand ile dinamik yükseklik
                     ft.Container(
@@ -438,9 +529,10 @@ class POSPage(ft.Container):
 
     def _safe_update(self):
         try:
-            _ = self.page
+            if self.page is None:
+                return
             self.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _run_ui_call(self, result):
@@ -584,6 +676,10 @@ class POSPage(ft.Container):
         self._products_cache_loaded = False
         self._products_by_barcode = {}
         self._products_by_id = {}
+        try:
+            self._refresh_quick_products()
+        except Exception:
+            pass
 
     def _load_products_cache(self, force: bool = False) -> list:
         if force or not self._products_cache_loaded:
@@ -609,6 +705,71 @@ class POSPage(ft.Container):
     def _find_cached_by_barcode(self, barcode: str):
         self._load_products_cache()
         return self._products_by_barcode.get(self._normalize_barcode(barcode))
+
+    def _quick_product_ids(self) -> list[int]:
+        raw = self.db.get_setting("quick_sale_product_ids", "[]")
+        try:
+            values = json.loads(raw)
+        except Exception:
+            values = []
+        result: list[int] = []
+        for value in values if isinstance(values, list) else []:
+            try:
+                product_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if product_id not in result:
+                result.append(product_id)
+        return result
+
+    def _refresh_quick_products(self):
+        q = (self.txt_quick_filter.value or "").strip().lower()
+        all_rows = self._load_products_cache()
+        quick_map = {int(r[0]): r for r in all_rows if r and r[0] is not None}
+        rows = [quick_map[pid] for pid in self._quick_product_ids() if pid in quick_map]
+        if q:
+            rows = [r for r in rows if q in (r[1] or "").lower() or q in (r[2] or "").lower()]
+        rows = rows[: self._quick_limit]
+        if not rows:
+            self.quick_products_grid.controls = [
+                ft.Container(
+                    padding=ft.padding.all(12),
+                    alignment=ft.Alignment(0, 0),
+                    content=ft.Text("Secili hizli urun yok", size=12, color=ft.Colors.BLUE_GREY_400),
+                )
+            ]
+        else:
+            self.quick_products_grid.controls = [self._quick_product_button(r) for r in rows]
+        self._safe_update()
+
+    def _quick_product_button(self, row):
+        _pid, name, barcode, _unit, price_incl, _vat, stock, _image_path, *_ = row
+        stock_color = ft.Colors.RED_700 if stock <= 0 else ft.Colors.BLUE_GREY_500
+        return ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border_radius=8,
+            border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+            padding=ft.padding.symmetric(horizontal=10, vertical=10),
+            on_click=lambda _, r=row: self._add_product_to_cart(r),
+            content=ft.Column(
+                [
+                    ft.Text(name or "", size=13, weight=ft.FontWeight.W_700,
+                            max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Row(
+                        [
+                            ft.Text(f"{float(price_incl or 0):.2f} TL", size=12,
+                                    color=ft.Colors.INDIGO_700, weight=ft.FontWeight.W_700),
+                            ft.Text(f"Stok {float(stock or 0):.0f}", size=11, color=stock_color),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    ft.Text(barcode or "", size=10, color=ft.Colors.BLUE_GREY_400,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                ],
+                tight=True,
+                spacing=4,
+            ),
+        )
 
     def _on_barcode_changed(self):
         barcode = self._normalize_barcode(self.txt_barcode.value)
@@ -742,10 +903,20 @@ class POSPage(ft.Container):
         qty_default = max(1.0, self._to_float(self.txt_qty.value, 1.0))
         txt_name = ft.TextField(label="Urun adi *", autofocus=True, expand=True)
         txt_barcode = ft.TextField(label="Barkod", value=barcode, read_only=True, expand=True)
+        txt_desc = ft.TextField(label="Aciklama", multiline=True, min_lines=2, max_lines=3, expand=True)
+        txt_category = ft.TextField(label="Kategori", width=170)
+        txt_sub_category = ft.TextField(label="Alt kategori", width=170)
+        txt_buy = ft.TextField(label="Alis fiyati", value="0", width=120)
         txt_price = ft.TextField(label="Satis fiyati", value="0", width=130)
         txt_stock = ft.TextField(label="Stok", value=f"{qty_default:g}", width=110)
+        txt_critical = ft.TextField(label="Kritik stok", value="0", width=110)
         txt_vat = ft.TextField(label="KDV %", value="20", width=90)
-        txt_category = ft.TextField(label="Kategori", width=170)
+        dd_vat_mode = ft.Dropdown(
+            label="Satis modu",
+            value="INCL",
+            width=140,
+            options=[ft.dropdown.Option("INCL", "KDV Dahil"), ft.dropdown.Option("EXCL", "KDV Haric")],
+        )
         dd_unit = ft.Dropdown(
             label="Birim",
             value="adet",
@@ -757,7 +928,64 @@ class POSPage(ft.Container):
                 ft.dropdown.Option("paket"),
             ],
         )
+        sw_scale = ft.Switch(label="Terazi urunu", value=False)
+        selected_image = {"path": ""}
+        image_preview = ft.Image(
+            src=None,
+            width=150,
+            height=110,
+            fit=ft.BoxFit.CONTAIN,
+            border_radius=8,
+            error_content=ft.Container(
+                width=150,
+                height=110,
+                bgcolor=ft.Colors.GREY_100,
+                border_radius=8,
+                alignment=ft.Alignment(0, 0),
+                content=ft.Text("Resim yok", size=11, color=ft.Colors.BLUE_GREY_400),
+            ),
+        )
         msg = ft.Text("", color=ft.Colors.RED_600, size=12)
+        lbl_excl = ft.Text("KDV Haric: 0.00", color=ft.Colors.BLUE_GREY_700, size=12)
+        lbl_incl = ft.Text("KDV Dahil: 0.00", color=ft.Colors.GREEN_700, size=12, weight=ft.FontWeight.W_600)
+
+        def refresh_price_info():
+            price = self._to_float(txt_price.value, 0)
+            vat = self._to_float(txt_vat.value, 20)
+            excl, incl = compute_prices(price, vat, dd_vat_mode.value or "INCL")
+            lbl_excl.value = f"KDV Haric: {excl:.2f}"
+            lbl_incl.value = f"KDV Dahil: {incl:.2f}"
+            self._safe_update()
+
+        def pick_image(_e):
+            def open_dialog():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    path = filedialog.askopenfilename(
+                        title="Urun resmi sec",
+                        filetypes=[
+                            ("Resim Dosyalari", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
+                            ("Tum Dosyalar", "*.*"),
+                        ],
+                    )
+                    root.destroy()
+                    if path:
+                        selected_image["path"] = path
+                        image_preview.src = path
+                        self._safe_update()
+                except Exception as ex:
+                    self._snack(f"Resim secilemedi: {ex}")
+
+            threading.Thread(target=open_dialog, daemon=True).start()
+
+        txt_price.on_change = lambda _: refresh_price_info()
+        txt_vat.on_change = lambda _: refresh_price_info()
+        dd_vat_mode.on_select = lambda _: refresh_price_info()
 
         def close_dialog(_e=None):
             self._close_dialog(dlg)
@@ -774,25 +1002,40 @@ class POSPage(ft.Container):
                 self.page.update()
                 return
             price = self._to_float(txt_price.value, 0)
+            buy_price = self._to_float(txt_buy.value, 0)
             stock = self._to_float(txt_stock.value, 0)
+            critical = self._to_float(txt_critical.value, 0)
             vat = self._to_float(txt_vat.value, 20)
             if price < 0 or stock < 0:
                 msg.value = "Fiyat ve stok negatif olamaz"
                 self.page.update()
                 return
 
-            excl, incl = compute_prices(price, vat, "INCL")
+            image_path = selected_image["path"]
+            if image_path and os.path.exists(image_path):
+                ext = os.path.splitext(image_path)[1] or ".png"
+                target = os.path.join(self._media_dir, f"{barcode}{ext}")
+                if os.path.abspath(target) != os.path.abspath(image_path):
+                    shutil.copy2(image_path, target)
+                image_path = target
+
+            excl, incl = compute_prices(price, vat, dd_vat_mode.value or "INCL")
             self.db.upsert_product(
                 barcode=barcode,
                 name=name,
+                description=(txt_desc.value or "").strip(),
                 category=(txt_category.value or "").strip(),
+                sub_category=(txt_sub_category.value or "").strip(),
                 unit=dd_unit.value or "adet",
+                buy_price=buy_price,
                 sell_price_excl_vat=excl,
                 sell_price_incl_vat=incl,
                 vat_rate=vat,
-                vat_mode="INCL",
+                vat_mode=dd_vat_mode.value or "INCL",
                 stock=stock,
-                critical_stock=0,
+                critical_stock=critical,
+                image_path=image_path,
+                is_scale_product=bool(sw_scale.value),
             )
             self._last_unknown_barcode = ""
             self.txt_barcode.value = ""
@@ -819,22 +1062,113 @@ class POSPage(ft.Container):
                 spacing=8,
             ),
             content=ft.Container(
-                width=520,
+                width=840,
                 content=ft.Column(
                     [
-                        ft.Text(f"Barkod: {barcode}", size=13, color=ft.Colors.BLUE_GREY_700),
-                        ft.Text(
-                            "Bu barkod kayitli degil. Urunu buradan ekleyip satisa devam edebilirsiniz.",
-                            size=12,
-                            color=ft.Colors.GREY_700,
+                        ft.Container(
+                            bgcolor=ft.Colors.ORANGE_50,
+                            border_radius=10,
+                            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                            content=ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.INFO_OUTLINE, color=ft.Colors.ORANGE_700, size=18),
+                                    ft.Column(
+                                        [
+                                            ft.Text(f"Barkod: {barcode}", size=13, color=ft.Colors.ORANGE_900, weight=ft.FontWeight.W_600),
+                                            ft.Text(
+                                                "Bu barkod kayitli degil. Temel bilgilerle hizlica urun ekleyip satisa devam edebilirsiniz.",
+                                                size=12,
+                                                color=ft.Colors.ORANGE_800,
+                                            ),
+                                        ],
+                                        spacing=3,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                                vertical_alignment=ft.CrossAxisAlignment.START,
+                            ),
                         ),
-                        txt_name,
-                        txt_barcode,
-                        ft.Row([txt_price, txt_stock, txt_vat, dd_unit], wrap=True, spacing=8),
-                        txt_category,
+                        ft.Row(
+                            [
+                                ft.Container(
+                                    width=470,
+                                    expand=True,
+                                    content=ft.Container(
+                                        bgcolor=ft.Colors.WHITE,
+                                        border_radius=12,
+                                        border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                                        padding=12,
+                                        content=ft.Column(
+                                            [
+                                                ft.Text("Temel Bilgiler", size=14, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
+                                                txt_name,
+                                                ft.Row([txt_barcode, dd_unit, sw_scale], wrap=True, spacing=8),
+                                                ft.Row([txt_category, txt_sub_category], wrap=True, spacing=8),
+                                                txt_desc,
+                                            ],
+                                            spacing=10,
+                                        ),
+                                    ),
+                                ),
+                                ft.Container(
+                                    width=300,
+                                    content=ft.Column(
+                                        [
+                                            ft.Container(
+                                                bgcolor=ft.Colors.WHITE,
+                                                border_radius=12,
+                                                border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                                                padding=12,
+                                                content=ft.Column(
+                                                    [
+                                                        ft.Text("Fiyat ve Stok", size=14, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
+                                                        ft.Row([txt_buy, txt_price], wrap=True, spacing=8),
+                                                        ft.Row([dd_vat_mode, txt_vat], wrap=True, spacing=8),
+                                                        ft.Container(
+                                                            bgcolor=ft.Colors.INDIGO_50,
+                                                            border_radius=8,
+                                                            padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                                                            content=ft.Column([lbl_excl, lbl_incl], spacing=4),
+                                                        ),
+                                                        ft.Row([txt_stock, txt_critical], wrap=True, spacing=8),
+                                                    ],
+                                                    spacing=10,
+                                                ),
+                                            ),
+                                            ft.Container(
+                                                bgcolor=ft.Colors.WHITE,
+                                                border_radius=12,
+                                                border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                                                padding=12,
+                                                content=ft.Column(
+                                                    [
+                                                        ft.Text("Gorsel", size=14, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
+                                                        ft.Container(
+                                                            content=image_preview,
+                                                            bgcolor=ft.Colors.GREY_50,
+                                                            border_radius=8,
+                                                            padding=6,
+                                                            border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                                                        ),
+                                                        ft.OutlinedButton("Resim Sec", icon=ft.Icons.IMAGE, on_click=pick_image),
+                                                    ],
+                                                    spacing=10,
+                                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                                ),
+                                            ),
+                                        ],
+                                        spacing=10,
+                                    ),
+                                ),
+                            ],
+                            wrap=True,
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
                         msg,
                     ],
-                    spacing=8,
+                    spacing=10,
                     tight=True,
                 ),
             ),
@@ -851,6 +1185,7 @@ class POSPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
+        refresh_price_info()
         return self._open_dialog(dlg)
 
     def _open_unknown_quick(self, source: str):
@@ -920,13 +1255,7 @@ class POSPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        try:
-            self.page.dialog = dlg
-            dlg.open = True
-            self.page.update()
-            return True
-        except Exception:
-            return False
+        return self._open_dialog(dlg)
 
     def _open_unknown_from_hint(self, source: str):
         if source == "barcode":
@@ -1034,10 +1363,10 @@ class POSPage(ft.Container):
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=3, tight=True,
                 controls=[
-                    ft.Image(src=image_path, height=60, fit=ft.BoxFit.COVER, border_radius=4)
+                    ft.Image(src=image_path, height=85, fit=ft.BoxFit.COVER, border_radius=4)
                     if has_img else
-                    ft.Container(height=50, alignment=ft.Alignment(0, 0),
-                                  content=ft.Icon(ft.Icons.SHOPPING_BAG, size=32,
+                    ft.Container(height=72, alignment=ft.Alignment(0, 0),
+                                  content=ft.Icon(ft.Icons.SHOPPING_BAG, size=44,
                                                   color=ft.Colors.BLUE_GREY_300)),
                     ft.Text(name, size=10, weight=ft.FontWeight.W_600,
                             text_align=ft.TextAlign.CENTER, max_lines=2,
@@ -1111,6 +1440,10 @@ class POSPage(ft.Container):
 
     def _refresh_cart_ui(self):
         self._build_basket_tabs()
+        item_count = len(self.cart)
+        subtotal = sum(i["line_total"] for i in self.cart)
+        self.lbl_cart_title.value = f"Aktif Sepet {self._active_basket + 1}"
+        self.lbl_cart_summary.value = f"{item_count} kalem | {subtotal:,.2f} TL"
         if not self.cart:
             self.cart_list.controls = [
                 ft.Container(
@@ -1130,42 +1463,42 @@ class POSPage(ft.Container):
             controls.append(
                 ft.Container(
                     bgcolor=ft.Colors.WHITE if idx % 2 == 0 else ft.Colors.BLUE_GREY_50,
-                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    padding=ft.padding.symmetric(horizontal=10, vertical=8),
                     content=ft.Row([
                         ft.Container(
-                            width=30,
-                            height=30,
-                            border_radius=4,
+                            width=38,
+                            height=38,
+                            border_radius=6,
                             clip_behavior=ft.ClipBehavior.HARD_EDGE,
                             bgcolor=ft.Colors.GREY_100,
                             content=(
-                                ft.Image(src=img_path, fit=ft.BoxFit.COVER, width=30, height=30)
+                                ft.Image(src=img_path, fit=ft.BoxFit.COVER, width=38, height=38)
                                 if has_img else
-                                ft.Icon(ft.Icons.IMAGE, size=16, color=ft.Colors.GREY_500)
+                                ft.Icon(ft.Icons.IMAGE, size=18, color=ft.Colors.GREY_500)
                             ),
                         ),
-                        ft.Text(f"• {item['name']}", size=11, expand=True,
-                                weight=ft.FontWeight.W_500, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text(f"{item['qty']:.2f}", size=11, width=56,
+                        ft.Text(f"• {item['name']}", size=14, expand=True,
+                                weight=ft.FontWeight.W_700, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(f"{item['qty']:.2f}", size=13, width=72,
                                 text_align=ft.TextAlign.RIGHT),
-                        ft.Text(item['unit'], size=11, width=38, text_align=ft.TextAlign.RIGHT,
+                        ft.Text(item['unit'], size=13, width=48, text_align=ft.TextAlign.RIGHT,
                                 color=ft.Colors.BLUE_GREY_600),
-                        ft.Text(f"{item['price']:.2f}", size=11, width=58,
+                        ft.Text(f"{item['price']:.2f}", size=13, width=90,
                                 text_align=ft.TextAlign.RIGHT),
-                        ft.Text(f"{item['line_total']:.2f}", size=11, width=62,
+                        ft.Text(f"{item['line_total']:.2f}", size=14, width=95,
                                 weight=ft.FontWeight.W_600, text_align=ft.TextAlign.RIGHT,
                                 color=ft.Colors.INDIGO_700),
                         ft.Row([
-                            ft.IconButton(ft.Icons.REMOVE_CIRCLE_OUTLINE, icon_size=14,
+                            ft.IconButton(ft.Icons.REMOVE_CIRCLE_OUTLINE, icon_size=18,
                                           padding=0, icon_color=ft.Colors.ORANGE_600,
                                           on_click=lambda _, b=bi, i=idx: self._change_qty(b, i, -1)),
-                            ft.IconButton(ft.Icons.ADD_CIRCLE_OUTLINE, icon_size=14,
+                            ft.IconButton(ft.Icons.ADD_CIRCLE_OUTLINE, icon_size=18,
                                           padding=0, icon_color=ft.Colors.GREEN_600,
                                           on_click=lambda _, b=bi, i=idx: self._change_qty(b, i, 1)),
-                            ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=14,
+                            ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=18,
                                           padding=0, icon_color=ft.Colors.RED_400,
                                           on_click=lambda _, b=bi, i=idx: self._remove_item(b, i)),
-                        ], spacing=0, width=50),
+                        ], spacing=0, width=78),
                     ]),
                 )
             )
@@ -1235,7 +1568,11 @@ class POSPage(ft.Container):
             discount = self._to_float(self.txt_discount_amt.value, 0)
             total = max(0.0, subtotal - discount)
             received = self._to_float(self.txt_received.value, 0)
-            if received + 0.001 < total:
+            # Eğer alınan para girilmemişse tam ödeme kabul et
+            if received <= 0:
+                self.txt_received.value = f"{total:.2f}"
+                self._update_totals()
+            elif received + 0.001 < total:
                 self._show_insufficient_cash_dialog(total, received)
                 return
         if payment_type == "VERESIYE":
@@ -1253,19 +1590,16 @@ class POSPage(ft.Container):
         missing = max(0.0, total - received)
 
         def _close(_e):
-            dlg.open = False
-            self.page.update()
+            self._close_dialog(dlg)
 
         def _to_veresiye(_e):
-            dlg.open = False
-            self.page.update()
+            self._close_dialog(dlg)
             if not self.dd_customer.visible:
                 self.dd_customer.visible = True
                 self._safe_update()
             if not self.dd_customer.value:
                 self._snack("Eksik tutarı veresiye eklemek için müşteri seçiniz")
                 return
-            # Nakit alınan kısmı kasaya, kalan kısmı müşteri borcuna yaz
             self._do_complete_sale("VERESIYE", cash_override=received, card_override=0.0)
 
         dlg = ft.AlertDialog(
@@ -1296,9 +1630,7 @@ class POSPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+        self._open_dialog(dlg)
 
     def _do_complete_sale(self, payment_type: str, cash_override: float | None = None,
                           card_override: float | None = None):
@@ -1339,6 +1671,7 @@ class POSPage(ft.Container):
         self.txt_received.value = "0"
         self.txt_discount_pct.value = "0"
         self.txt_discount_amt.value = "0.00"
+        self._update_totals()
         self.invalidate_product_cache()
         self.refresh_products_grid()
         if self.on_sale_completed:
@@ -1421,15 +1754,16 @@ class POSPage(ft.Container):
             k = self._to_float(txt_kredi.value, 0)
             if abs(n + k - total) > 0.05:
                 lbl_warn.value = f"Nakit+Kart={n+k:.2f} toplamı {total:.2f} TL olmalı"
-                self.page.update()
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
                 return
-            self.page.dialog.open = False
-            self.page.update()
+            self._close_dialog(dlg)
             self._do_complete_sale("NAKIT+POS", cash_override=n, card_override=k)
 
         def cancel(_e):
-            self.page.dialog.open = False
-            self.page.update()
+            self._close_dialog(dlg)
 
         dlg = ft.AlertDialog(
             modal=True,
@@ -1458,9 +1792,7 @@ class POSPage(ft.Container):
                 ),
             ],
         )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+        self._open_dialog(dlg)
 
     # ── Fiş Dialog ────────────────────────────────────────────────────────────
 
@@ -1522,8 +1854,7 @@ class POSPage(ft.Container):
             ]
 
             def close(_e=None):
-                self.page.dialog.open = False
-                self.page.update()
+                self._close_dialog(dlg)
 
             dlg = ft.AlertDialog(
                 modal=True,
@@ -1539,9 +1870,7 @@ class POSPage(ft.Container):
                                        on_click=lambda _: self._snack("Yazıcı entegrasyonu yakında...")),
                 ],
             )
-            self.page.dialog = dlg
-            dlg.open = True
-            self.page.update()
+            self._open_dialog(dlg)
         except Exception:
             self._snack(f"Satış kaydedildi  |  Toplam: {total:.2f} ₺")
 
@@ -1551,10 +1880,14 @@ class POSPage(ft.Container):
         if width < 900:
             self.products_grid.max_extent = 120
             self.products_grid.child_aspect_ratio = 0.85
+            self.quick_side_panel.visible = False
         elif width < 1200:
             self.products_grid.max_extent = 145
             self.products_grid.child_aspect_ratio = 0.88
+            self.quick_side_panel.visible = False
         else:
             self.products_grid.max_extent = 160
             self.products_grid.child_aspect_ratio = 0.90
+            self.quick_side_panel.visible = True
+            self.quick_side_panel.width = 280 if width < 1400 else 300
         self._safe_update()

@@ -1,0 +1,15 @@
+time,status,type,local_path,drive_path,message
+2026-04-12 14:04:02,SUCCESS,auto,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_140402.db,,
+2026-04-12 14:15:53,SUCCESS,manual,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_141553.db,,
+2026-04-12 14:16:42,SUCCESS,auto,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_141642.db,,
+2026-04-12 14:21:42,SUCCESS,auto,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_142142.db,,
+2026-04-12 14:26:42,SUCCESS,auto,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_142642.db,,
+2026-04-12 14:29:17,SUCCESS,manual,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_142917.db,,
+2026-04-12 14:36:45,SUCCESS,auto,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_143645.db,,
+2026-04-12 14:37:23,SUCCESS,auto,C:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_143723.db,,
+2026-04-12 14:47:55,ERROR,auto:both,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_auto_20260412_144755.db,,Google Drive klasoru ayarlanamadi
+2026-04-12 14:47:55,ERROR,auto:both,,,Google Drive klasoru ayarlanamadi
+2026-04-12 14:55:53,ERROR,manual:both,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_145553.db,,Google Drive klasoru ayarlanamadi
+2026-04-12 14:55:54,ERROR,manual:both,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_145554.db,,Google Drive klasoru ayarlanamadi
+2026-04-12 14:55:55,ERROR,manual:both,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_145554.db,,Google Drive klasoru ayarlanamadi
+2026-04-12 15:24:33,ERROR,manual:both,c:\Users\iuri_\OneDrive\Masaüstü\temel_market_barkod_pos_sat-program-\backups\market_manual_20260412_152433.db,,Google Drive klasoru ayarlanamadi

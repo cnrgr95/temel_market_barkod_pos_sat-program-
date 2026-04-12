@@ -4,6 +4,14 @@ import sqlite3
 from datetime import datetime
 
 
+class _ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def _hash_password(password: str) -> str:
     """PBKDF2-HMAC-SHA256 ile sifre hashle."""
     salt = os.urandom(16)
@@ -34,7 +42,7 @@ class DB:
         self._setup()
 
     def conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.db_path, timeout=15)
+        c = sqlite3.connect(self.db_path, timeout=15, factory=_ClosingConnection)
         c.execute("PRAGMA foreign_keys = ON")
         c.execute("PRAGMA busy_timeout = 15000")
         c.execute("PRAGMA journal_mode = WAL")
@@ -150,6 +158,7 @@ class DB:
                     move_type TEXT NOT NULL,
                     amount REAL NOT NULL,
                     sale_id INTEGER,
+                    expense_category TEXT,
                     note TEXT
                 )
                 """
@@ -185,6 +194,40 @@ class DB:
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS generated_barcodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    barcode TEXT UNIQUE NOT NULL,
+                    label_name TEXT,
+                    prefix TEXT,
+                    note TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS product_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    note TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS product_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    note TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(group_name, name)
+                )
+                """
+            )
 
             cur.execute("CREATE INDEX IF NOT EXISTS idx_prod_barcode ON products(barcode)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_time ON sales(sale_time)")
@@ -192,6 +235,8 @@ class DB:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_moves_time ON stock_moves(move_time)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items(product_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_generated_barcodes_time ON generated_barcodes(created_at)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_product_categories_group ON product_categories(group_name)")
 
             self._migrate_all(cur)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_prod_active_barcode ON products(is_active, barcode)")
@@ -214,6 +259,7 @@ class DB:
             key_col, value_col = self._settings_columns(cur)
             cur.execute(f"INSERT OR IGNORE INTO settings ({key_col}, {value_col}) VALUES ('company_name', 'Temel Market')")
             cur.execute(f"INSERT OR IGNORE INTO settings ({key_col}, {value_col}) VALUES ('currency', 'TRY')")
+            cur.execute(f"INSERT OR IGNORE INTO settings ({key_col}, {value_col}) VALUES ('backup_target_mode', 'BOTH')")
             conn.commit()
 
     # ── Migration ────────────────────────────────────────────────────────────
@@ -235,6 +281,7 @@ class DB:
         self._migrate_cash_moves_columns(cur)
         self._migrate_users_columns(cur)
         self._migrate_passwords(cur)
+        self._migrate_taxonomy(cur)
 
     def _migrate_products_columns(self, cur) -> None:
         self._ensure_column(cur, "products", "description", "TEXT")
@@ -263,6 +310,7 @@ class DB:
         self._ensure_column(cur, "customers", "address", "TEXT")
         self._ensure_column(cur, "customers", "email", "TEXT")
         self._ensure_column(cur, "customers", "balance", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column(cur, "customers", "notes", "TEXT")
 
     def _migrate_suppliers_columns(self, cur) -> None:
         self._ensure_column(cur, "suppliers", "phone", "TEXT")
@@ -350,6 +398,49 @@ class DB:
 
     def _migrate_cash_moves_columns(self, cur) -> None:
         self._ensure_column(cur, "cash_moves", "sale_id", "INTEGER")
+        self._ensure_column(cur, "cash_moves", "expense_category", "TEXT")
+
+    def _migrate_taxonomy(self, cur) -> None:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS product_categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_name TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(group_name, name)
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO product_groups (name, note, created_at)
+            SELECT DISTINCT category, '', ?
+            FROM products
+            WHERE COALESCE(category, '') != ''
+            """,
+            (_now(),),
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO product_categories (group_name, name, note, created_at)
+            SELECT DISTINCT COALESCE(category, ''), sub_category, '', ?
+            FROM products
+            WHERE COALESCE(sub_category, '') != ''
+            """,
+            (_now(),),
+        )
 
     def _migrate_users_columns(self, cur) -> None:
         self._ensure_column(cur, "app_users", "can_products", "INTEGER NOT NULL DEFAULT 0")
@@ -415,6 +506,60 @@ class DB:
             conn.commit()
 
     # ── Ürünler ──────────────────────────────────────────────────────────────
+
+    def barcode_exists(self, barcode: str) -> bool:
+        with self.conn() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM products
+                WHERE barcode=? AND COALESCE(is_active,1)=1
+                UNION
+                SELECT 1
+                FROM generated_barcodes
+                WHERE barcode=?
+                LIMIT 1
+                """,
+                (barcode, barcode),
+            ).fetchone()
+        return bool(row)
+
+    def add_generated_barcode(
+        self,
+        barcode: str,
+        label_name: str = "",
+        prefix: str = "",
+        note: str = "",
+    ) -> bool:
+        with self.conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO generated_barcodes
+                    (barcode, label_name, prefix, note, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (barcode, label_name.strip(), prefix.strip(), note.strip(), _now()),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def list_generated_barcodes(self, limit: int = 200):
+        with self.conn() as conn:
+            return conn.execute(
+                """
+                SELECT id, barcode, label_name, prefix, note, created_at
+                FROM generated_barcodes
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit or 1)),),
+            ).fetchall()
+
+    def delete_generated_barcode(self, barcode_id: int) -> None:
+        with self.conn() as conn:
+            conn.execute("DELETE FROM generated_barcodes WHERE id=?", (barcode_id,))
+            conn.commit()
 
     def upsert_product(
         self,
@@ -511,7 +656,7 @@ class DB:
             return conn.execute(
                 f"""
                 SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
-                       stock, image_path, is_scale_product, critical_stock, category
+                       stock, image_path, is_scale_product, critical_stock, category, sub_category
                 FROM products {where}
                 ORDER BY name
                 """
@@ -523,6 +668,179 @@ class DB:
                 "SELECT DISTINCT category FROM products WHERE COALESCE(is_active,1)=1 AND category IS NOT NULL AND category != '' ORDER BY category"
             ).fetchall()
             return [r[0] for r in rows]
+
+    def list_sub_categories(self, group_name: str = "") -> list[str]:
+        with self.conn() as conn:
+            if group_name:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT sub_category
+                    FROM products
+                    WHERE COALESCE(is_active,1)=1 AND COALESCE(sub_category,'') != '' AND category=?
+                    ORDER BY sub_category
+                    """,
+                    (group_name,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT sub_category
+                    FROM products
+                    WHERE COALESCE(is_active,1)=1 AND COALESCE(sub_category,'') != ''
+                    ORDER BY sub_category
+                    """
+                ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_product_groups(self):
+        with self.conn() as conn:
+            return conn.execute(
+                """
+                SELECT id, name, COALESCE(note, '')
+                FROM product_groups
+                ORDER BY name
+                """
+            ).fetchall()
+
+    def list_product_categories(self, group_name: str = ""):
+        with self.conn() as conn:
+            if group_name:
+                return conn.execute(
+                    """
+                    SELECT id, group_name, name, COALESCE(note, '')
+                    FROM product_categories
+                    WHERE group_name=?
+                    ORDER BY name
+                    """,
+                    (group_name,),
+                ).fetchall()
+            return conn.execute(
+                """
+                SELECT id, group_name, name, COALESCE(note, '')
+                FROM product_categories
+                ORDER BY group_name, name
+                """
+            ).fetchall()
+
+    def upsert_product_group(self, name: str, *, old_name: str = "", note: str = "") -> None:
+        name = (name or "").strip()
+        old_name = (old_name or "").strip()
+        if not name:
+            raise ValueError("Grup adi bos olamaz")
+        with self.conn() as conn:
+            cur = conn.cursor()
+            if old_name and old_name != name:
+                cur.execute(
+                    "UPDATE product_groups SET name=?, note=? WHERE name=?",
+                    (name, note.strip(), old_name),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        "INSERT INTO product_groups (name, note, created_at) VALUES (?, ?, ?)",
+                        (name, note.strip(), _now()),
+                    )
+                cur.execute("UPDATE product_categories SET group_name=? WHERE group_name=?", (name, old_name))
+                cur.execute("UPDATE products SET category=? WHERE category=?", (name, old_name))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO product_groups (name, note, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET note=excluded.note
+                    """,
+                    (name, note.strip(), _now()),
+                )
+            conn.commit()
+
+    def delete_product_group(self, name: str) -> None:
+        name = (name or "").strip()
+        if not name:
+            return
+        with self.conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM product_categories WHERE group_name=?", (name,))
+            cur.execute("DELETE FROM product_groups WHERE name=?", (name,))
+            cur.execute("UPDATE products SET category='', sub_category='' WHERE category=?", (name,))
+            conn.commit()
+
+    def upsert_product_category(
+        self,
+        name: str,
+        *,
+        group_name: str = "",
+        old_name: str = "",
+        old_group_name: str = "",
+        note: str = "",
+    ) -> None:
+        name = (name or "").strip()
+        group_name = (group_name or "").strip()
+        old_name = (old_name or "").strip()
+        old_group_name = (old_group_name or "").strip()
+        if not name:
+            raise ValueError("Kategori adi bos olamaz")
+        with self.conn() as conn:
+            cur = conn.cursor()
+            if group_name:
+                cur.execute(
+                    """
+                    INSERT INTO product_groups (name, note, created_at)
+                    VALUES (?, '', ?)
+                    ON CONFLICT(name) DO NOTHING
+                    """,
+                    (group_name, _now()),
+                )
+            if old_name and (old_name != name or old_group_name != group_name):
+                cur.execute(
+                    """
+                    UPDATE product_categories
+                    SET group_name=?, name=?, note=?
+                    WHERE group_name=? AND name=?
+                    """,
+                    (group_name, name, note.strip(), old_group_name, old_name),
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        """
+                        INSERT INTO product_categories (group_name, name, note, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (group_name, name, note.strip(), _now()),
+                    )
+                cur.execute(
+                    """
+                    UPDATE products
+                    SET category=?, sub_category=?
+                    WHERE category=? AND sub_category=?
+                    """,
+                    (group_name, name, old_group_name, old_name),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO product_categories (group_name, name, note, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(group_name, name) DO UPDATE SET note=excluded.note
+                    """,
+                    (group_name, name, note.strip(), _now()),
+                )
+            conn.commit()
+
+    def delete_product_category(self, name: str, *, group_name: str = "") -> None:
+        name = (name or "").strip()
+        group_name = (group_name or "").strip()
+        if not name:
+            return
+        with self.conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM product_categories WHERE group_name=? AND name=?",
+                (group_name, name),
+            )
+            cur.execute(
+                "UPDATE products SET sub_category='' WHERE category=? AND sub_category=?",
+                (group_name, name),
+            )
+            conn.commit()
 
     def get_product_by_barcode(self, barcode: str):
         with self.conn() as conn:
@@ -536,31 +854,133 @@ class DB:
                 (barcode,),
             ).fetchone()
 
+    def bulk_update_product_prices(
+        self,
+        *,
+        scope: str = "ALL",
+        change_type: str = "PERCENT",
+        direction: str = "INCREASE",
+        value: float = 0.0,
+        group_name: str = "",
+        category_name: str = "",
+    ) -> int:
+        amount = abs(float(value or 0))
+        if amount <= 0:
+            return 0
+
+        where = ["COALESCE(is_active,1)=1"]
+        params: list = []
+        scope = (scope or "ALL").upper()
+        change_type = (change_type or "PERCENT").upper()
+        direction = (direction or "INCREASE").upper()
+        if scope == "GROUP" and group_name:
+            where.append("category=?")
+            params.append(group_name)
+        elif scope == "CATEGORY":
+            if group_name:
+                where.append("category=?")
+                params.append(group_name)
+            if category_name:
+                where.append("sub_category=?")
+                params.append(category_name)
+
+        with self.conn() as conn:
+            cur = conn.cursor()
+            rows = cur.execute(
+                f"""
+                SELECT id, sell_price_incl_vat, vat_rate
+                FROM products
+                WHERE {' AND '.join(where)}
+                """,
+                params,
+            ).fetchall()
+            updated = 0
+            for product_id, current_price, vat_rate in rows:
+                current_price = float(current_price or 0)
+                delta = current_price * (amount / 100.0) if change_type == "PERCENT" else amount
+                if direction == "DECREASE":
+                    new_incl = max(0.0, current_price - delta)
+                else:
+                    new_incl = max(0.0, current_price + delta)
+                rate = float(vat_rate or 0)
+                new_excl = new_incl / (1 + rate / 100.0) if rate > -100 else new_incl
+                cur.execute(
+                    """
+                    UPDATE products
+                    SET sell_price_incl_vat=?, sell_price_excl_vat=?
+                    WHERE id=?
+                    """,
+                    (new_incl, new_excl, product_id),
+                )
+                updated += 1
+            conn.commit()
+        return updated
+
     # ── Müşteriler ────────────────────────────────────────────────────────────
 
     def list_customers(self):
         with self.conn() as conn:
             return conn.execute(
-                "SELECT id, name, phone, address, balance FROM customers ORDER BY name"
+                "SELECT id, name, phone, address, balance, COALESCE(notes,'') FROM customers ORDER BY name"
             ).fetchall()
 
-    def add_customer(self, name: str, phone: str = "", address: str = "", email: str = "") -> int:
+    def add_customer(self, name: str, phone: str = "", address: str = "", email: str = "", notes: str = "") -> int:
         with self.conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO customers (name,phone,address,email,balance,created_at) VALUES(?,?,?,?,0,?)",
-                (name, phone, address, email, _now()),
+                "INSERT INTO customers (name,phone,address,email,balance,notes,created_at) VALUES(?,?,?,?,0,?,?)",
+                (name, phone, address, email, notes, _now()),
             )
             conn.commit()
             return cur.lastrowid
 
-    def update_customer(self, customer_id: int, name: str, phone: str, address: str) -> None:
+    def update_customer(self, customer_id: int, name: str, phone: str, address: str, notes: str = "") -> None:
         with self.conn() as conn:
             conn.execute(
-                "UPDATE customers SET name=?,phone=?,address=? WHERE id=?",
-                (name, phone, address, customer_id),
+                "UPDATE customers SET name=?,phone=?,address=?,notes=? WHERE id=?",
+                (name, phone, address, notes, customer_id),
             )
             conn.commit()
+
+    def get_sale_items_full(self, sale_id: int):
+        """Satış kalemleri + ürün bilgisi (müşteri geçmişi için)."""
+        with self.conn() as conn:
+            return conn.execute(
+                """
+                SELECT si.product_name, si.qty, si.unit_price, si.item_discount, si.vat_rate, si.line_total,
+                       COALESCE(p.unit, 'adet')
+                FROM sale_items si
+                LEFT JOIN products p ON p.id = si.product_id
+                WHERE si.sale_id = ?
+                ORDER BY si.id
+                """,
+                (sale_id,),
+            ).fetchall()
+
+    def get_bottom_products(self, date_from: str = "", date_to: str = "", limit: int = 10):
+        """En az satılan ürünler (miktar bazlı)."""
+        where_parts = ["s.is_return=0", "COALESCE(s.is_return,0)=0"]
+        params: list = []
+        if date_from:
+            where_parts.append("date(s.sale_time) >= ?")
+            params.append(date_from)
+        if date_to:
+            where_parts.append("date(s.sale_time) <= ?")
+            params.append(date_to)
+        params.append(limit)
+        with self.conn() as conn:
+            return conn.execute(
+                f"""
+                SELECT si.product_name, COALESCE(SUM(si.qty),0) AS total_qty
+                FROM sale_items si
+                JOIN sales s ON s.id = si.sale_id
+                WHERE {' AND '.join(where_parts)}
+                GROUP BY si.product_name
+                ORDER BY total_qty ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
 
     def delete_customer(self, customer_id: int) -> None:
         with self.conn() as conn:
@@ -653,11 +1073,21 @@ class DB:
 
     # ── Kasa Hareketleri ──────────────────────────────────────────────────────
 
-    def add_cash_move(self, move_type: str, amount: float, note: str = "", sale_id: int | None = None) -> None:
+    def add_cash_move(
+        self,
+        move_type: str,
+        amount: float,
+        note: str = "",
+        sale_id: int | None = None,
+        expense_category: str = "",
+    ) -> None:
         with self.conn() as conn:
             conn.execute(
-                "INSERT INTO cash_moves (move_time,move_type,amount,sale_id,note) VALUES(?,?,?,?,?)",
-                (_now(), move_type.upper(), amount, sale_id, note),
+                """
+                INSERT INTO cash_moves (move_time,move_type,amount,sale_id,expense_category,note)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (_now(), move_type.upper(), amount, sale_id, (expense_category or "").strip(), note),
             )
             conn.commit()
 
@@ -680,8 +1110,40 @@ class DB:
         params.append(limit)
         with self.conn() as conn:
             return conn.execute(
-                f"SELECT move_time, move_type, amount, note FROM cash_moves "
+                f"""
+                SELECT move_time, move_type, amount, note, COALESCE(expense_category,''), sale_id
+                FROM cash_moves
+                """
                 f"WHERE {' AND '.join(where_parts)} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+
+    def get_cash_expense_summary(self, date_from: str = "", date_to: str = ""):
+        where_parts = ["move_type='OUT'"]
+        params: list = []
+        if date_from:
+            where_parts.append("date(move_time) >= ?")
+            params.append(date_from)
+        if date_to:
+            where_parts.append("date(move_time) <= ?")
+            params.append(date_to)
+        with self.conn() as conn:
+            return conn.execute(
+                f"""
+                SELECT
+                    CASE
+                        WHEN COALESCE(expense_category,'') != '' THEN expense_category
+                        WHEN sale_id IS NOT NULL THEN 'Iade / Satis Kaydi'
+                        ELSE 'Diger'
+                    END AS category_name,
+                    COUNT(*),
+                    COALESCE(SUM(amount), 0)
+                FROM cash_moves
+                WHERE {' AND '.join(where_parts)}
+                GROUP BY category_name
+                ORDER BY SUM(amount) DESC, category_name
+                """
+                ,
                 params,
             ).fetchall()
 
@@ -808,6 +1270,26 @@ class DB:
                         int(can_users), int(can_backup), int(can_hardware), int(can_sales_history), user_id,
                     ),
                 )
+            conn.commit()
+
+    def change_user_password(self, user_id: int, current_password: str, new_password: str) -> None:
+        current_password = current_password or ""
+        new_password = new_password or ""
+        if len(new_password) < 4:
+            raise ValueError("Yeni sifre en az 4 karakter olmali")
+        with self.conn() as conn:
+            row = conn.execute(
+                "SELECT password FROM app_users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("Kullanici bulunamadi")
+            if not _verify_password(current_password, row[0] or ""):
+                raise ValueError("Mevcut sifre hatali")
+            conn.execute(
+                "UPDATE app_users SET password=? WHERE id=?",
+                (_hash_password(new_password), user_id),
+            )
             conn.commit()
 
     def delete_user(self, user_id: int) -> None:
@@ -1018,6 +1500,20 @@ class DB:
                 """,
                 params,
             ).fetchall()
+            bottoms = conn.execute(
+                f"""
+                SELECT COALESCE(NULLIF(si.product_name,''), p.name, '(silindi)') pname,
+                       COALESCE(SUM(si.qty),0) qty
+                FROM sale_items si
+                LEFT JOIN products p ON p.id=si.product_id
+                JOIN sales s ON s.id=si.sale_id
+                WHERE {where_clause}
+                GROUP BY si.product_id, pname
+                ORDER BY qty ASC, pname ASC
+                LIMIT 10
+                """,
+                params,
+            ).fetchall()
         return {
             "daily_total": float(daily[0] or 0),
             "daily_cash": float(daily[1] or 0),
@@ -1027,4 +1523,5 @@ class DB:
             "monthly_total": float(monthly or 0),
             "return_total": float(return_total or 0),
             "top_products": tops,
+            "bottom_products": bottoms,
         }

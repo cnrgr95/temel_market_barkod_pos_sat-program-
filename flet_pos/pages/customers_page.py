@@ -3,157 +3,261 @@ import flet as ft
 
 class CustomersPage(ft.Container):
     def __init__(self, db):
-        super().__init__(expand=True)
         self.db = db
-        self._edit_id: int | None = None  # Duzenleme modunda musteri id'si
+        self._edit_id: int | None = None
+        self._selected_customer = None  # currently shown in history
 
-        self.txt_name = ft.TextField(label="Musteri Adi *", expand=True)
-        self.txt_phone = ft.TextField(label="Telefon", width=180)
-        self.txt_address = ft.TextField(label="Adres", expand=True)
+        # ── Form fields ───────────────────────────────────────────────────────
+        self.txt_name = ft.TextField(label="Müşteri Adı *", expand=True, dense=True)
+        self.txt_phone = ft.TextField(label="Telefon", width=180, dense=True)
+        self.txt_address = ft.TextField(label="Adres", expand=True, dense=True)
+        self.txt_notes = ft.TextField(
+            label="Açıklama / Not",
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            expand=True,
+            dense=True,
+        )
         self.btn_save = ft.ElevatedButton(
-            "Musteri Ekle", icon=ft.Icons.PERSON_ADD, on_click=self._save_customer
+            "Müşteri Ekle", icon=ft.Icons.PERSON_ADD, on_click=self._save_customer
         )
         self.btn_cancel = ft.TextButton(
-            "Iptal", icon=ft.Icons.CANCEL, on_click=self._reset_form, visible=False
+            "İptal", icon=ft.Icons.CANCEL, on_click=self._reset_form, visible=False
         )
 
-        self.txt_payment = ft.TextField(label="Tahsilat Tutari", width=160, value="0")
-        self.dd_customer = ft.Dropdown(label="Tahsilat Yapilacak Musteri", expand=True, options=[])
+        # ── Payment fields ────────────────────────────────────────────────────
+        self.txt_payment = ft.TextField(label="Tahsilat Tutarı", width=160, value="0", dense=True)
+        self.dd_customer = ft.Dropdown(
+            label="Tahsilat — Müşteri Seç", expand=True, options=[], dense=True
+        )
+        self.dd_customer.on_select = self._on_customer_select
         self.lbl_customer_balance = ft.Text("Bakiye: -", size=13, color=ft.Colors.RED_700)
 
+        # ── Left panel: search + list ─────────────────────────────────────────
         self.txt_search = ft.TextField(
-            label="Musteri Ara",
+            label="Müşteri Ara",
             prefix_icon=ft.Icons.SEARCH,
-            width=280,
-            on_change=lambda _: self._safe_refresh_table(),
-        )
-
-        self.table = ft.DataTable(
-            border_radius=10,
-            border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
-            heading_row_color=ft.Colors.INDIGO_50,
-            column_spacing=20,
-            columns=[
-                ft.DataColumn(ft.Text("Musteri", weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Telefon", weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Adres", weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Bakiye (TL)", weight=ft.FontWeight.W_600), numeric=True),
-                ft.DataColumn(ft.Text("Islemler", weight=ft.FontWeight.W_600)),
-            ],
-            rows=[],
-        )
-
-        self.lbl_total_debt = ft.Text(
-            "Toplam Alacak: 0.00 TL", size=15, weight=ft.FontWeight.W_600, color=ft.Colors.RED_700
-        )
-
-        # Set on_select after creation (Flet API)
-        self.dd_customer.on_select = self._on_customer_select
-
-        self.content = ft.Column(
             expand=True,
+            on_change=lambda _: self._safe_refresh_list(),
+            dense=True,
+        )
+        self.lbl_total_debt = ft.Text(
+            "Toplam Alacak: 0.00 ₺",
+            size=12,
+            weight=ft.FontWeight.W_600,
+            color=ft.Colors.RED_700,
+        )
+        self.customer_list_col = ft.Column(
+            spacing=2,
             scroll=ft.ScrollMode.AUTO,
-            spacing=14,
-            controls=[
-                ft.Text("Cari Hesap (Veresiye)", size=26, weight=ft.FontWeight.BOLD),
-                # Musteri ekleme / duzenleme formu
-                ft.Container(
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=12,
-                    padding=14,
-                    content=ft.Column(
-                        controls=[
+            expand=True,
+        )
+
+        # ── Right panel: history ──────────────────────────────────────────────
+        self.lbl_history_title = ft.Text(
+            "Geçmişi görmek için soldaki listeden müşteri seçin",
+            size=13,
+            color=ft.Colors.BLUE_GREY_400,
+            italic=True,
+        )
+        self.lbl_selected_balance = ft.Text(
+            "", size=13, weight=ft.FontWeight.W_600
+        )
+        self.history_col = ft.Column(
+            spacing=4,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+        content = self._build_layout()
+        super().__init__(expand=True, content=content)
+
+    # ── Dialog helpers ────────────────────────────────────────────────────────
+
+    def _open_dialog(self, dlg: ft.AlertDialog):
+        if self.page is None:
+            return
+        if dlg not in self.page.overlay:
+            self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _close_dialog(self, dlg: ft.AlertDialog):
+        dlg.open = False
+        if self.page:
+            self.page.update()
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+
+    def _build_layout(self):
+        # ── Left panel: compact customer list ────────────────────────────────
+        left_panel = ft.Container(
+            width=320,
+            content=ft.Column(
+                spacing=8,
+                expand=True,
+                controls=[
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.PEOPLE, color=ft.Colors.INDIGO_600, size=18),
                             ft.Text(
-                                "Musteri Bilgileri",
-                                size=15,
-                                weight=ft.FontWeight.W_600,
+                                "Müşteri Listesi",
+                                size=14,
+                                weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.INDIGO_700,
+                                expand=True,
                             ),
-                            ft.ResponsiveRow(
-                                controls=[
-                                    ft.Container(col={"sm": 12, "md": 5}, content=self.txt_name),
-                                    ft.Container(col={"sm": 6, "md": 3}, content=self.txt_phone),
-                                    ft.Container(col={"sm": 6, "md": 4}, content=self.txt_address),
-                                ]
+                            ft.ElevatedButton(
+                                "Yeni",
+                                icon=ft.Icons.PERSON_ADD,
+                                on_click=self._reset_form,
+                                height=32,
+                                style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=10)),
                             ),
-                            ft.Row([self.btn_save, self.btn_cancel]),
                         ],
-                        spacing=10,
+                        spacing=6,
                     ),
-                ),
-                # Tahsilat
-                ft.Container(
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=12,
-                    padding=14,
-                    content=ft.Column(
-                        controls=[
-                            ft.Text(
+                    self.txt_search,
+                    self.lbl_total_debt,
+                    ft.Container(
+                        expand=True,
+                        bgcolor=ft.Colors.WHITE,
+                        border_radius=10,
+                        border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                        padding=6,
+                        content=self.customer_list_col,
+                    ),
+                ],
+            ),
+        )
+
+        # ── Right panel: form + payment + history ─────────────────────────────
+        form_card = ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Text(
+                        "Müşteri Bilgileri",
+                        size=13,
+                        weight=ft.FontWeight.W_600,
+                        color=ft.Colors.INDIGO_700,
+                    ),
+                    ft.Row([self.txt_name, self.txt_phone], spacing=10),
+                    self.txt_address,
+                    self.txt_notes,
+                    ft.Row([self.btn_save, self.btn_cancel], spacing=8),
+                ],
+            ),
+        )
+
+        payment_card = ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                spacing=10,
+                controls=[
+                    ft.Text(
+                        "Tahsilat Al",
+                        size=13,
+                        weight=ft.FontWeight.W_600,
+                        color=ft.Colors.GREEN_700,
+                    ),
+                    ft.Row(
+                        [self.dd_customer, self.lbl_customer_balance],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        [
+                            self.txt_payment,
+                            ft.ElevatedButton(
                                 "Tahsilat Al",
-                                size=15,
-                                weight=ft.FontWeight.W_600,
-                                color=ft.Colors.GREEN_700,
-                            ),
-                            ft.ResponsiveRow(
-                                controls=[
-                                    ft.Container(col={"sm": 12, "md": 6}, content=self.dd_customer),
-                                    ft.Container(col={"sm": 6, "md": 2}, content=self.lbl_customer_balance),
-                                    ft.Container(col={"sm": 6, "md": 2}, content=self.txt_payment),
-                                    ft.Container(
-                                        col={"sm": 6, "md": 2},
-                                        content=ft.ElevatedButton(
-                                            "Tahsilat Al",
-                                            icon=ft.Icons.PAYMENTS,
-                                            on_click=self._take_payment,
-                                        ),
-                                    ),
-                                ]
+                                icon=ft.Icons.PAYMENTS,
+                                on_click=self._take_payment,
                             ),
                         ],
                         spacing=10,
                     ),
-                ),
-                # Arama + ozet
-                ft.Row(
-                    [
-                        ft.Text(
-                            "Musteri Listesi",
-                            size=16,
-                            weight=ft.FontWeight.W_600,
-                            color=ft.Colors.BLUE_GREY_700,
-                        ),
-                        self.lbl_total_debt,
-                        self.txt_search,
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    wrap=True,
-                ),
-                ft.Container(
-                    content=ft.Column([self.table], scroll=ft.ScrollMode.AUTO),
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=12,
-                    padding=10,
-                ),
-                # İşlem geçmişi paneli (müşteri seçilince açılır)
-                self._build_history_panel(),
+                ],
+            ),
+        )
+
+        history_card = ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border_radius=12,
+            padding=14,
+            expand=True,
+            content=ft.Column(
+                spacing=8,
+                expand=True,
+                controls=[
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.HISTORY, color=ft.Colors.INDIGO_500, size=16),
+                            self.lbl_history_title,
+                            ft.Container(expand=True),
+                            self.lbl_selected_balance,
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Divider(height=1),
+                    self.history_col,
+                ],
+            ),
+        )
+
+        right_panel = ft.Container(
+            expand=True,
+            content=ft.Column(
+                spacing=10,
+                expand=True,
+                controls=[
+                    ft.Text(
+                        "Cari Hesap (Veresiye)",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.INDIGO_700,
+                    ),
+                    form_card,
+                    payment_card,
+                    history_card,
+                ],
+            ),
+        )
+
+        return ft.Row(
+            expand=True,
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            controls=[
+                left_panel,
+                ft.VerticalDivider(width=1, color=ft.Colors.BLUE_GREY_100),
+                right_panel,
             ],
         )
-        self.refresh()
 
-    # ── Yardimci ─────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _safe_update(self):
+        if self.page is None:
+            return
         try:
-            _ = self.page
             self.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _snack(self, text: str):
+        if self.page is None:
+            return
         try:
             self.page.snack_bar = ft.SnackBar(ft.Text(text), open=True)
             self.page.update()
-        except RuntimeError:
+        except Exception:
             pass
 
     def _to_float(self, value: str) -> float:
@@ -162,8 +266,8 @@ class CustomersPage(ft.Container):
         except ValueError:
             return 0.0
 
-    def _safe_refresh_table(self):
-        self._render_table()
+    def _safe_refresh_list(self):
+        self._render_list()
         self._safe_update()
 
     # ── Form ─────────────────────────────────────────────────────────────────
@@ -173,17 +277,20 @@ class CustomersPage(ft.Container):
         self.txt_name.value = ""
         self.txt_phone.value = ""
         self.txt_address.value = ""
-        self.btn_save.text = "Musteri Ekle"
+        self.txt_notes.value = ""
+        self.btn_save.text = "Müşteri Ekle"
         self.btn_save.icon = ft.Icons.PERSON_ADD
         self.btn_cancel.visible = False
         self._safe_update()
 
     def _load_customer(self, r):
-        """Tablodan tiklanan musteri verilerini forma yukle."""
+        """Listeden seçilen müşteriyi forma yükle."""
+        # r: (id, name, phone, address, balance, notes)
         self._edit_id = r[0]
         self.txt_name.value = r[1] or ""
         self.txt_phone.value = r[2] or ""
         self.txt_address.value = r[3] or ""
+        self.txt_notes.value = r[5] if len(r) > 5 else ""
         self.btn_save.text = "Kaydet"
         self.btn_save.icon = ft.Icons.SAVE
         self.btn_cancel.visible = True
@@ -192,218 +299,401 @@ class CustomersPage(ft.Container):
     def _save_customer(self, _e: ft.ControlEvent):
         name = (self.txt_name.value or "").strip()
         if not name:
-            self._snack("Musteri adi giriniz")
+            self._snack("Müşteri adı giriniz")
             return
         phone = (self.txt_phone.value or "").strip()
         address = (self.txt_address.value or "").strip()
+        notes = (self.txt_notes.value or "").strip()
         if self._edit_id:
-            self.db.update_customer(self._edit_id, name, phone, address)
-            self._snack(f"{name} guncellendi")
+            self.db.update_customer(self._edit_id, name, phone, address, notes)
+            self._snack(f"{name} güncellendi")
         else:
-            self.db.add_customer(name, phone, address)
+            self.db.add_customer(name, phone, address, notes=notes)
             self._snack(f"{name} eklendi")
         self._reset_form()
         self.refresh()
 
-    # ── Silme Onay Diyalogu ───────────────────────────────────────────────────
+    # ── Delete dialog ─────────────────────────────────────────────────────────
 
     def _confirm_delete(self, customer_id: int, name: str):
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Müşteri Sil"),
+            content=ft.Text(f'"{name}" silinsin mi?\nBu işlem geri alınamaz.'),
+        )
+
         def do_delete(_e):
             try:
                 self.db.delete_customer(customer_id)
                 self._snack(f"{name} silindi")
             except Exception as ex:
                 self._snack(f"Silinemedi: {ex}")
-            self.page.dialog.open = False
-            self.page.update()
+            self._close_dialog(dlg)
             self.refresh()
-            self._safe_update()
 
         def cancel(_e):
-            self.page.dialog.open = False
-            self.page.update()
+            self._close_dialog(dlg)
 
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Musteri Sil"),
-            content=ft.Text(f'"{name}" silinsin mi?'),
-            actions=[
-                ft.TextButton("Iptal", on_click=cancel),
-                ft.ElevatedButton("Sil", icon=ft.Icons.DELETE, on_click=do_delete, color=ft.Colors.RED_700),
-            ],
-        )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+        dlg.actions = [
+            ft.TextButton("İptal", on_click=cancel),
+            ft.ElevatedButton(
+                "Sil", icon=ft.Icons.DELETE, on_click=do_delete, color=ft.Colors.RED_700
+            ),
+        ]
+        self._open_dialog(dlg)
 
-    # ── Tahsilat ─────────────────────────────────────────────────────────────
+    # ── Payment ───────────────────────────────────────────────────────────────
 
-    def _build_history_panel(self):
-        """Müşteri işlem geçmişi paneli — başlangıçta gizli."""
-        self.lbl_history_title = ft.Text(
-            "", size=14, weight=ft.FontWeight.W_600, color=ft.Colors.INDIGO_700,
-        )
-        self.history_table = ft.DataTable(
-            border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
-            border_radius=8,
-            heading_row_color=ft.Colors.INDIGO_50,
-            heading_row_height=36,
-            data_row_min_height=40,
-            column_spacing=16,
-            columns=[
-                ft.DataColumn(ft.Text("Tarih", weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Tip", weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Toplam", weight=ft.FontWeight.W_600), numeric=True),
-                ft.DataColumn(ft.Text("İndirim", weight=ft.FontWeight.W_600), numeric=True),
-                ft.DataColumn(ft.Text("Tür", weight=ft.FontWeight.W_600)),
-            ],
-            rows=[],
-        )
-        self._history_container = ft.Container(
-            key="history_panel",
-            visible=False,
-            bgcolor=ft.Colors.WHITE,
-            border_radius=12,
-            padding=14,
-            content=ft.Column([
-                self.lbl_history_title,
-                ft.Container(content=self.history_table, bgcolor=ft.Colors.WHITE),
-            ], spacing=8),
-        )
-        return self._history_container
-
-    def _show_history(self, customer_row):
-        cid = customer_row[0]
-        cname = customer_row[1]
-        sales = self.db.list_customer_sales(cid)
-        self.lbl_history_title.value = f"İşlem Geçmişi: {cname} ({len(sales)} kayıt)"
-        self.history_table.rows = []
-        for s in sales:
-            sid, stime, pay, total, disc, is_ret = s
-            typ_text = "İADE" if is_ret else "SATIŞ"
-            typ_color = ft.Colors.ORANGE_700 if is_ret else ft.Colors.GREEN_700
-            pay_colors = {
-                "NAKIT": ft.Colors.GREEN_700,
-                "POS": ft.Colors.BLUE_700,
-                "VERESIYE": ft.Colors.PURPLE_700,
-                "HAVALE": ft.Colors.TEAL_700,
-            }
-            self.history_table.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(str(stime or "")[:16], size=12)),
-                ft.DataCell(ft.Text(pay or "", size=12,
-                                    color=pay_colors.get(pay, ft.Colors.BLUE_GREY_600))),
-                ft.DataCell(ft.Text(f"{float(total or 0):,.2f}", size=12,
-                                    weight=ft.FontWeight.W_600)),
-                ft.DataCell(ft.Text(f"{float(disc or 0):,.2f}", size=12,
-                                    color=ft.Colors.ORANGE_600)),
-                ft.DataCell(ft.Text(typ_text, size=12, color=typ_color,
-                                    weight=ft.FontWeight.W_600)),
-            ]))
-        self._history_container.visible = True
-        self._safe_update()
-        # Geçmiş paneline scroll et
-        try:
-            self.content.scroll_to(key="history_panel", duration=300)
-        except Exception:
-            pass
-
-    def _on_customer_select(self, e):
+    def _on_customer_select(self, _e):
         if not self.dd_customer.value:
             self.lbl_customer_balance.value = "Bakiye: -"
             self._safe_update()
             return
         try:
-            cid = int(self.dd_customer.value.split(" - ")[0])
+            cid = int((self.dd_customer.value or "").split(" - ")[0])
         except (ValueError, IndexError):
             return
-        rows = self.db.list_customers()
-        row = next((r for r in rows if r[0] == cid), None)
+        row = next((r for r in self.db.list_customers() if r[0] == cid), None)
         if row:
             balance = float(row[4] or 0)
-            color = ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
-            self.lbl_customer_balance.value = f"Bakiye: {balance:.2f} TL"
-            self.lbl_customer_balance.color = color
+            self.lbl_customer_balance.value = f"Bakiye: {balance:.2f} ₺"
+            self.lbl_customer_balance.color = (
+                ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
+            )
             self._safe_update()
 
     def _take_payment(self, _e: ft.ControlEvent):
         if not self.dd_customer.value:
-            self._snack("Musteri seciniz")
+            self._snack("Müşteri seçiniz")
             return
         amount = self._to_float(self.txt_payment.value)
         if amount <= 0:
-            self._snack("Gecerli bir tutar giriniz")
+            self._snack("Geçerli bir tutar giriniz")
             return
-        cid = int(self.dd_customer.value.split(" - ")[0])
-        # Asiri tahsilat uyarisi
-        rows = self.db.list_customers()
-        row = next((r for r in rows if r[0] == cid), None)
+        try:
+            cid = int((self.dd_customer.value or "").split(" - ")[0])
+        except (ValueError, IndexError):
+            return
+        row = next((r for r in self.db.list_customers() if r[0] == cid), None)
         if row:
             balance = float(row[4] or 0)
             if amount > balance + 0.01:
-                self._snack(f"Uyari: Tahsilat borcu asiyor ({balance:.2f} TL)")
+                self._snack(f"Uyarı: Tahsilat borcu aşıyor ({balance:.2f} ₺)")
         self.db.add_customer_payment(cid, amount)
         self.txt_payment.value = "0"
         self.dd_customer.value = None
         self.lbl_customer_balance.value = "Bakiye: -"
         self.refresh()
-        self._safe_update()
 
-    # ── Tablo ─────────────────────────────────────────────────────────────────
+    # ── Customer list (left panel) ────────────────────────────────────────────
 
-    def _render_table(self):
+    def _render_list(self):
         search = (self.txt_search.value or "").strip().lower()
         all_rows = self.db.list_customers()
-        rows = [r for r in all_rows if not search or search in (r[1] or "").lower() or search in (r[2] or "").lower()]
+        filtered = [
+            r
+            for r in all_rows
+            if not search
+            or search in (r[1] or "").lower()
+            or search in (r[2] or "").lower()
+        ]
 
         total_debt = sum(float(r[4] or 0) for r in all_rows if float(r[4] or 0) > 0)
-        self.lbl_total_debt.value = f"Toplam Alacak: {total_debt:.2f} TL"
-        self.dd_customer.options = [ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in all_rows]
+        self.lbl_total_debt.value = f"Toplam Alacak: {total_debt:.2f} ₺"
+        self.dd_customer.options = [
+            ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in all_rows
+        ]
 
-        self.table.rows = []
-        for r in rows:
+        self.customer_list_col.controls = []
+        for r in filtered:
             balance = float(r[4] or 0)
             bal_color = ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
-            self.table.rows.append(
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text(r[1] or "", weight=ft.FontWeight.W_500)),
-                        ft.DataCell(ft.Text(r[2] or "")),
-                        ft.DataCell(ft.Text(r[3] or "")),
-                        ft.DataCell(
-                            ft.Text(f"{balance:.2f}", color=bal_color, weight=ft.FontWeight.W_600)
+            is_selected = (
+                self._selected_customer is not None
+                and r[0] == self._selected_customer[0]
+            )
+
+            tile = ft.Container(
+                bgcolor=ft.Colors.INDIGO_50 if is_selected else ft.Colors.TRANSPARENT,
+                border_radius=8,
+                padding=ft.padding.symmetric(vertical=6, horizontal=8),
+                content=ft.Row(
+                    controls=[
+                        ft.Column(
+                            spacing=1,
+                            expand=True,
+                            controls=[
+                                ft.Text(
+                                    r[1] or "",
+                                    size=13,
+                                    weight=ft.FontWeight.W_600,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                ),
+                                ft.Text(
+                                    r[2] or "—",
+                                    size=11,
+                                    color=ft.Colors.BLUE_GREY_400,
+                                    max_lines=1,
+                                ),
+                            ],
                         ),
-                        ft.DataCell(
+                        ft.Text(
+                            f"{balance:.2f} ₺",
+                            size=12,
+                            color=bal_color,
+                            weight=ft.FontWeight.W_600,
+                        ),
+                        ft.Row(
+                            [
+                                ft.IconButton(
+                                    ft.Icons.EDIT,
+                                    icon_color=ft.Colors.INDIGO_400,
+                                    icon_size=15,
+                                    tooltip="Düzenle",
+                                    on_click=lambda _, row=r: self._load_customer(row),
+                                ),
+                                ft.IconButton(
+                                    ft.Icons.DELETE,
+                                    icon_color=ft.Colors.RED_400,
+                                    icon_size=15,
+                                    tooltip="Sil",
+                                    on_click=lambda _, row=r: self._confirm_delete(
+                                        row[0], row[1]
+                                    ),
+                                ),
+                            ],
+                            spacing=0,
+                        ),
+                    ],
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                on_click=lambda _, row=r: self._show_history(row),
+                ink=True,
+            )
+            self.customer_list_col.controls.append(tile)
+
+    # ── History (right panel) ─────────────────────────────────────────────────
+
+    def _show_history(self, customer_row):
+        self._selected_customer = customer_row
+        cid = customer_row[0]
+        cname = customer_row[1]
+        balance = float(customer_row[4] or 0)
+
+        self.lbl_history_title.value = f"{cname} — İşlem Geçmişi"
+        self.lbl_history_title.italic = False
+        self.lbl_history_title.color = ft.Colors.INDIGO_700
+        self.lbl_selected_balance.value = f"Bakiye: {balance:.2f} ₺"
+        self.lbl_selected_balance.color = (
+            ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
+        )
+
+        sales = self.db.list_customer_sales(cid)
+        self.history_col.controls = []
+
+        if not sales:
+            self.history_col.controls.append(
+                ft.Container(
+                    padding=20,
+                    content=ft.Text(
+                        "Henüz işlem kaydı yok",
+                        color=ft.Colors.BLUE_GREY_300,
+                        italic=True,
+                        size=13,
+                    ),
+                )
+            )
+        else:
+            for s in sales:
+                sid, stime, pay, total, disc, is_ret = s
+                self.history_col.controls.append(
+                    self._build_history_row(sid, stime, pay, total, disc, is_ret)
+                )
+
+        # Re-render list to update selection highlight
+        self._render_list()
+        self._safe_update()
+
+    def _build_history_row(self, sid, stime, pay, total, disc, is_ret):
+        typ_text = "İADE" if is_ret else "SATIŞ"
+        typ_color = ft.Colors.ORANGE_700 if is_ret else ft.Colors.GREEN_700
+        pay_colors = {
+            "NAKIT": ft.Colors.GREEN_700,
+            "POS": ft.Colors.BLUE_700,
+            "VERESIYE": ft.Colors.PURPLE_700,
+            "HAVALE": ft.Colors.TEAL_700,
+            "NAKIT+POS": ft.Colors.CYAN_700,
+        }
+        pay_color = pay_colors.get(pay, ft.Colors.BLUE_GREY_600)
+
+        return ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+            border_radius=8,
+            padding=ft.padding.symmetric(vertical=8, horizontal=12),
+            margin=ft.margin.only(bottom=4),
+            content=ft.Row(
+                controls=[
+                    ft.Icon(
+                        ft.Icons.UNDO if is_ret else ft.Icons.SHOPPING_CART,
+                        color=typ_color,
+                        size=16,
+                    ),
+                    ft.Column(
+                        spacing=3,
+                        expand=True,
+                        controls=[
+                            ft.Text(
+                                str(stime or "")[:16],
+                                size=11,
+                                color=ft.Colors.BLUE_GREY_500,
+                            ),
                             ft.Row(
                                 [
-                                    ft.IconButton(
-                                        ft.Icons.HISTORY,
-                                        tooltip="İşlem Geçmişi",
-                                        icon_color=ft.Colors.TEAL_600,
-                                        icon_size=18,
-                                        on_click=lambda _, row=r: self._show_history(row),
+                                    ft.Container(
+                                        bgcolor=ft.Colors.PURPLE_50
+                                        if pay == "VERESIYE"
+                                        else ft.Colors.GREEN_50,
+                                        border_radius=4,
+                                        padding=ft.padding.symmetric(
+                                            vertical=2, horizontal=6
+                                        ),
+                                        content=ft.Text(
+                                            pay or "",
+                                            size=10,
+                                            color=pay_color,
+                                            weight=ft.FontWeight.W_600,
+                                        ),
                                     ),
-                                    ft.IconButton(
-                                        ft.Icons.EDIT,
-                                        tooltip="Duzenle",
-                                        icon_color=ft.Colors.INDIGO_600,
-                                        icon_size=18,
-                                        on_click=lambda _, row=r: self._load_customer(row),
-                                    ),
-                                    ft.IconButton(
-                                        ft.Icons.DELETE,
-                                        tooltip="Sil",
-                                        icon_color=ft.Colors.RED_600,
-                                        icon_size=18,
-                                        on_click=lambda _, row=r: self._confirm_delete(row[0], row[1]),
+                                    ft.Container(
+                                        bgcolor=ft.Colors.ORANGE_50
+                                        if is_ret
+                                        else ft.Colors.BLUE_50,
+                                        border_radius=4,
+                                        padding=ft.padding.symmetric(
+                                            vertical=2, horizontal=6
+                                        ),
+                                        content=ft.Text(
+                                            typ_text,
+                                            size=10,
+                                            color=typ_color,
+                                            weight=ft.FontWeight.W_600,
+                                        ),
                                     ),
                                 ],
-                                spacing=0,
-                            )
+                                spacing=4,
+                            ),
+                        ],
+                    ),
+                    ft.Column(
+                        spacing=2,
+                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                        controls=[
+                            ft.Text(
+                                f"{float(total or 0):,.2f} ₺",
+                                size=13,
+                                weight=ft.FontWeight.W_700,
+                            ),
+                            ft.Text(
+                                f"İnd: {float(disc or 0):,.2f} ₺",
+                                size=10,
+                                color=ft.Colors.ORANGE_600,
+                            ),
+                        ],
+                    ),
+                    ft.IconButton(
+                        ft.Icons.LIST_ALT,
+                        icon_color=ft.Colors.INDIGO_400,
+                        icon_size=18,
+                        tooltip="Ürünleri Göster",
+                        on_click=lambda _, sale_id=sid, t=stime, tot=total: self._show_sale_items(
+                            sale_id, t, tot
+                        ),
+                    ),
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _show_sale_items(self, sale_id: int, stime, total):
+        items = self.db.get_sale_items_full(sale_id)
+        if items:
+            rows = [
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(pname or "(silinmiş)", size=12)),
+                        ft.DataCell(
+                            ft.Text(f"{float(qty or 0):.2f} {unit}", size=12)
+                        ),
+                        ft.DataCell(
+                            ft.Text(f"{float(unit_price or 0):.2f} ₺", size=12),
+                        ),
+                        ft.DataCell(
+                            ft.Text(
+                                f"{float(line_total or 0):.2f} ₺",
+                                size=12,
+                                weight=ft.FontWeight.W_600,
+                            ),
                         ),
                     ]
                 )
+                for pname, qty, unit_price, item_disc, vat_rate, line_total, unit in items
+            ]
+            body = ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
+                    ft.DataTable(
+                        border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                        border_radius=8,
+                        heading_row_color=ft.Colors.INDIGO_50,
+                        column_spacing=16,
+                        columns=[
+                            ft.DataColumn(
+                                ft.Text("Ürün", weight=ft.FontWeight.W_600)
+                            ),
+                            ft.DataColumn(
+                                ft.Text("Miktar", weight=ft.FontWeight.W_600)
+                            ),
+                            ft.DataColumn(
+                                ft.Text("Birim Fiyat", weight=ft.FontWeight.W_600),
+                                numeric=True,
+                            ),
+                            ft.DataColumn(
+                                ft.Text("Toplam", weight=ft.FontWeight.W_600),
+                                numeric=True,
+                            ),
+                        ],
+                        rows=rows,
+                    ),
+                    ft.Divider(),
+                    ft.Text(
+                        f"Genel Toplam: {float(total or 0):,.2f} ₺",
+                        size=14,
+                        weight=ft.FontWeight.BOLD,
+                        text_align=ft.TextAlign.RIGHT,
+                    ),
+                ],
+            )
+        else:
+            body = ft.Text(
+                "Bu satışa ait kalem bulunamadı",
+                color=ft.Colors.BLUE_GREY_300,
+                italic=True,
             )
 
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Satış Kalemleri — {str(stime or '')[:16]}"),
+            content=ft.Container(width=500, content=body),
+        )
+        dlg.actions = [
+            ft.TextButton("Kapat", on_click=lambda _: self._close_dialog(dlg))
+        ]
+        self._open_dialog(dlg)
+
+    # ── Main refresh ──────────────────────────────────────────────────────────
+
     def refresh(self):
-        self._render_table()
+        self._render_list()
         self._safe_update()
