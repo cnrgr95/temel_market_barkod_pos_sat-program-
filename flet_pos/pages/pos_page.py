@@ -4,6 +4,8 @@ import inspect
 import asyncio
 import flet as ft
 
+from flet_pos.services.pricing import compute_prices
+
 # Banknot değerleri (TL)
 _BANKNOTES = [1, 5, 10, 20, 50, 100, 200]
 
@@ -18,6 +20,11 @@ class POSPage(ft.Container):
         self._last_unknown_barcode = ""
         self._unknown_barcode_value = ""
         self._unknown_search_value = ""
+        self._products_cache: list = []
+        self._products_cache_loaded = False
+        self._products_by_barcode: dict[str, tuple] = {}
+        self._products_by_id: dict[int, tuple] = {}
+        self._grid_filter_value = ""
 
         # 4 bağımsız sepet
         self._baskets: list[list[dict]] = [[], [], [], []]
@@ -37,7 +44,7 @@ class POSPage(ft.Container):
         # Sepet sekme butonları
         self._basket_tab_row = ft.Row(spacing=4)
 
-        # Barkod
+        # Eski sol barkod alanı layouttan kaldırıldı; referanslar güvenli kalsın diye gizli tutulur.
         self.txt_barcode = ft.TextField(
             label="BARKOD NO",
             expand=True,
@@ -46,7 +53,6 @@ class POSPage(ft.Container):
             on_submit=lambda _: self._add_by_barcode(),
             on_change=lambda _: self._on_barcode_changed(),
             text_size=15,
-            autofocus=True,
         )
         self.unknown_barcode_hint = ft.Container(
             visible=False,
@@ -54,7 +60,7 @@ class POSPage(ft.Container):
             border=ft.border.all(1, ft.Colors.ORANGE_200),
             border_radius=6,
             padding=ft.padding.symmetric(horizontal=8, vertical=4),
-            on_click=lambda _: self._open_unknown_from_hint("barcode"),
+            on_click=lambda _: self._open_unknown_quick("barcode"),
             content=ft.Row([
                 ft.Icon(ft.Icons.INFO_OUTLINE, color=ft.Colors.ORANGE_700, size=14),
                 ft.Text("Ürün bulunamadı", size=11, color=ft.Colors.ORANGE_800, expand=True),
@@ -67,7 +73,7 @@ class POSPage(ft.Container):
                         padding=ft.padding.symmetric(horizontal=8, vertical=2),
                     ),
                     height=28,
-                    on_click=lambda _: self._open_unknown_from_hint("barcode"),
+                    on_click=lambda _: self._open_unknown_quick("barcode"),
                 ),
             ], spacing=6),
         )
@@ -121,12 +127,14 @@ class POSPage(ft.Container):
 
         # Ürün arama
         self.txt_search = ft.TextField(
-            label="Urun Ara... (Barkod ile ara: Enter)",
-            prefix_icon=ft.Icons.SEARCH,
+            label="Barkod okut / Urun ara",
+            hint_text="Barkod okutun veya urun adi yazip Enter'a basin",
+            prefix_icon=ft.Icons.QR_CODE_SCANNER,
             expand=True,
             on_change=lambda _: self._on_search_changed(),
             on_submit=lambda _: self._search_and_add(),
             bgcolor=ft.Colors.WHITE,
+            autofocus=True,
         )
         self.unknown_search_hint = ft.Container(
             visible=False,
@@ -134,7 +142,7 @@ class POSPage(ft.Container):
             border=ft.border.all(1, ft.Colors.ORANGE_200),
             border_radius=6,
             padding=ft.padding.symmetric(horizontal=8, vertical=4),
-            on_click=lambda _: self._open_unknown_from_hint("search"),
+            on_click=lambda _: self._open_unknown_quick("search"),
             content=ft.Row([
                 ft.Icon(ft.Icons.INFO_OUTLINE, color=ft.Colors.ORANGE_700, size=14),
                 ft.Text("Ürün bulunamadı", size=11, color=ft.Colors.ORANGE_800, expand=True),
@@ -147,7 +155,7 @@ class POSPage(ft.Container):
                         padding=ft.padding.symmetric(horizontal=8, vertical=2),
                     ),
                     height=28,
-                    on_click=lambda _: self._open_unknown_from_hint("search"),
+                    on_click=lambda _: self._open_unknown_quick("search"),
                 ),
             ], spacing=6),
         )
@@ -240,16 +248,6 @@ class POSPage(ft.Container):
                         content=self._basket_tab_row,
                     ),
                     # ── Barkod + Adet ─────────────────────────────
-                    ft.Container(
-                        padding=ft.padding.symmetric(horizontal=8),
-                        content=ft.Column(
-                            [
-                                ft.Row([self.txt_barcode, self.txt_qty], spacing=6),
-                                self.unknown_barcode_hint,
-                            ],
-                            spacing=4,
-                        ),
-                    ),
                     # dd_product_picker görünmez — sadece senkronizasyon için tutulur
                     ft.Container(content=self.dd_product_picker, visible=False, height=0),
                     # ── İskonto ───────────────────────────────────
@@ -381,7 +379,29 @@ class POSPage(ft.Container):
             border=ft.border.only(bottom=ft.BorderSide(1, ft.Colors.BLUE_GREY_100)),
             padding=ft.padding.symmetric(horizontal=6, vertical=4),
             content=ft.Column([
-                ft.Row([self.txt_search], spacing=6),
+                ft.Row(
+                    [
+                        self.txt_search,
+                        self.txt_qty,
+                        ft.ElevatedButton(
+                            "Ara / Ekle",
+                            icon=ft.Icons.ADD_SHOPPING_CART,
+                            height=48,
+                            style=ft.ButtonStyle(
+                                bgcolor=ft.Colors.INDIGO_700,
+                                color=ft.Colors.WHITE,
+                                shape=ft.RoundedRectangleBorder(radius=6),
+                            ),
+                            on_click=lambda _: self._search_and_add(),
+                        ),
+                        ft.IconButton(
+                            ft.Icons.CLOSE,
+                            tooltip="Aramayi temizle",
+                            on_click=lambda _: self._clear_search(),
+                        ),
+                    ],
+                    spacing=6,
+                ),
                 self.unknown_search_hint,
                 self.tabs_category,
             ], spacing=4),
@@ -461,11 +481,38 @@ class POSPage(ft.Container):
         except RuntimeError:
             pass
 
+    def _open_dialog(self, dlg):
+        try:
+            if dlg not in self.page.overlay:
+                self.page.overlay.append(dlg)
+            dlg.open = True
+            self.page.update()
+            return True
+        except Exception:
+            return False
+
+    def _close_dialog(self, dlg):
+        try:
+            dlg.open = False
+            self.page.update()
+        except Exception:
+            pass
+
     def _to_float(self, value, default: float = 0.0) -> float:
         try:
             return float((str(value) or "").replace(",", "."))
         except (ValueError, TypeError):
             return default
+
+    def _clear_search(self):
+        self.txt_search.value = ""
+        self._grid_filter_value = ""
+        self._hide_unknown_prompt("all")
+        self.refresh_products_grid()
+        try:
+            self._run_ui_call(self.txt_search.focus())
+        except Exception:
+            pass
 
     # ── Sepet sekmeleri ───────────────────────────────────────────────────────
 
@@ -505,10 +552,8 @@ class POSPage(ft.Container):
     # ── Kategori sekmeleri ────────────────────────────────────────────────────
 
     def _build_category_tabs(self):
-        try:
-            cats_db = self.db.list_categories()
-        except Exception:
-            cats_db = []
+        rows = self._load_products_cache()
+        cats_db = sorted({(r[10] or "") for r in rows if len(r) > 10 and (r[10] or "")})
         cats = ["TUMU"] + cats_db
         self.tabs_category.controls = []
         for cat in cats:
@@ -534,15 +579,46 @@ class POSPage(ft.Container):
 
     # ── Barkod / dropdown senkron ─────────────────────────────────────────────
 
+    def invalidate_product_cache(self):
+        self._products_cache = []
+        self._products_cache_loaded = False
+        self._products_by_barcode = {}
+        self._products_by_id = {}
+
+    def _load_products_cache(self, force: bool = False) -> list:
+        if force or not self._products_cache_loaded:
+            rows = self.db.list_products()
+            self._products_cache = list(rows)
+            self._products_cache_loaded = True
+            self._products_by_barcode = {
+                self._normalize_barcode(r[2]): r
+                for r in self._products_cache
+                if len(r) > 2 and self._normalize_barcode(r[2])
+            }
+            self._products_by_id = {
+                int(r[0]): r
+                for r in self._products_cache
+                if len(r) > 0 and r[0] is not None
+            }
+        return self._products_cache
+
+    def _find_cached_by_id(self, product_id: int):
+        self._load_products_cache()
+        return self._products_by_id.get(product_id)
+
+    def _find_cached_by_barcode(self, barcode: str):
+        self._load_products_cache()
+        return self._products_by_barcode.get(self._normalize_barcode(barcode))
+
     def _on_barcode_changed(self):
         barcode = self._normalize_barcode(self.txt_barcode.value)
         self._hide_unknown_prompt("barcode")
         if not barcode:
             return
-        all_rows = self.db.list_products()
+        all_rows = self._load_products_cache()
 
         # Tam barkod eşleşmesi → otomatik sepete ekle (barkod okuyucu gibi)
-        exact = next((r for r in all_rows if (r[2] or "") == barcode), None)
+        exact = self._find_cached_by_barcode(barcode)
         if exact:
             self._add_product_to_cart(exact)
             self.txt_barcode.value = ""
@@ -551,34 +627,36 @@ class POSPage(ft.Container):
             return
 
         # Kısmi eşleşme → dropdown'ı güncelle (elle yazarken yardımcı)
-        partial = next((r for r in all_rows if (r[2] or "").startswith(barcode)), None)
+        partial = next((r for r in all_rows if self._normalize_barcode(r[2]).startswith(barcode)), None)
         if partial:
             key = f"{partial[0]} - {partial[1]}"
             if self.dd_product_picker.value != key:
                 self.dd_product_picker.value = key
-                self._safe_update()
             return
-        if self._looks_like_barcode(barcode):
+        if len(barcode) >= 8 and self._looks_like_barcode(barcode):
             self._show_unknown_prompt("barcode", barcode)
 
     def _on_search_changed(self):
         query = self._normalize_barcode(self.txt_search.value)
         # Her değişimde grid filtresi çalışsın
-        self.refresh_products_grid()
         self._hide_unknown_prompt("search")
         if not query:
+            if self._grid_filter_value:
+                self._grid_filter_value = ""
+                self.refresh_products_grid()
             return
         # Barkod formatındaysa Enter beklemeden otomatik eklemeyi dene
         if not self._looks_like_barcode(query):
             return
-        row = self.db.get_product_by_barcode(query)
+        row = self._find_cached_by_barcode(query)
         if row:
             self._add_product_to_cart(row)
             self.txt_search.value = ""
+            self._grid_filter_value = ""
             self.refresh_products_grid()
             self._safe_update()
             return
-        if self._looks_like_barcode(query):
+        if len(query) >= 8:
             self._show_unknown_prompt("search", query)
 
     def _on_dropdown_changed(self):
@@ -588,7 +666,7 @@ class POSPage(ft.Container):
             pid = int(self.dd_product_picker.value.split(" - ")[0])
         except (ValueError, IndexError):
             return
-        row = next((r for r in self.db.list_products() if r[0] == pid), None)
+        row = self._find_cached_by_id(pid)
         if row and self.txt_barcode.value != (row[2] or ""):
             self.txt_barcode.value = row[2] or ""
             self._safe_update()
@@ -602,17 +680,18 @@ class POSPage(ft.Container):
             return
 
         # 1) Tam barkod eşleşmesi
-        row = self.db.get_product_by_barcode(query)
+        row = self._find_cached_by_barcode(query)
         if row:
             self._add_product_to_cart(row)
             self.txt_search.value = ""
+            self._grid_filter_value = ""
             self._hide_unknown_prompt("search")
             self.refresh_products_grid()
             self._safe_update()
             return
 
         # 2) İsme göre arama — tek eşleşme varsa direkt ekle
-        all_rows = self.db.list_products()
+        all_rows = self._load_products_cache()
         q_lower = query.lower()
         matches = [r for r in all_rows
                    if q_lower in (r[1] or "").lower() or q_lower in (r[2] or "").lower()]
@@ -620,18 +699,21 @@ class POSPage(ft.Container):
         if len(matches) == 1:
             self._add_product_to_cart(matches[0])
             self.txt_search.value = ""
+            self._grid_filter_value = ""
             self.refresh_products_grid()
             self._safe_update()
             return
 
         if len(matches) > 1:
+            self._grid_filter_value = query
+            self.refresh_products_grid()
             # Birden fazla sonuç — grid zaten filtreli gösteriyor, kullanıcı seçsin
             self._snack(f"{len(matches)} ürün bulundu — listeden seçin")
             return
 
         # 3) Hiç bulunamadı
         if self._looks_like_barcode(query):
-            self._show_barcode_not_found_dialog(query)
+            self._show_quick_product_dialog(query)
         else:
             self._snack("Ürün bulunamadı")
 
@@ -639,7 +721,7 @@ class POSPage(ft.Container):
         barcode = self._normalize_barcode(self.txt_barcode.value)
         if not barcode:
             return
-        row = self.db.get_product_by_barcode(barcode)
+        row = self._find_cached_by_barcode(barcode)
         if row:
             self._add_product_to_cart(row)
             self.txt_barcode.value = ""
@@ -647,7 +729,143 @@ class POSPage(ft.Container):
             self.dd_product_picker.value = None
             self._safe_update()
         else:
-            self._show_barcode_not_found_dialog(barcode)
+            self._show_quick_product_dialog(barcode)
+
+    def _show_quick_product_dialog(self, barcode: str, force: bool = False) -> bool:
+        barcode = self._normalize_barcode(barcode)
+        if not barcode:
+            return False
+        if (not force) and self._last_unknown_barcode == barcode:
+            return False
+        self._last_unknown_barcode = barcode
+
+        qty_default = max(1.0, self._to_float(self.txt_qty.value, 1.0))
+        txt_name = ft.TextField(label="Urun adi *", autofocus=True, expand=True)
+        txt_barcode = ft.TextField(label="Barkod", value=barcode, read_only=True, expand=True)
+        txt_price = ft.TextField(label="Satis fiyati", value="0", width=130)
+        txt_stock = ft.TextField(label="Stok", value=f"{qty_default:g}", width=110)
+        txt_vat = ft.TextField(label="KDV %", value="20", width=90)
+        txt_category = ft.TextField(label="Kategori", width=170)
+        dd_unit = ft.Dropdown(
+            label="Birim",
+            value="adet",
+            width=120,
+            options=[
+                ft.dropdown.Option("adet"),
+                ft.dropdown.Option("kg"),
+                ft.dropdown.Option("litre"),
+                ft.dropdown.Option("paket"),
+            ],
+        )
+        msg = ft.Text("", color=ft.Colors.RED_600, size=12)
+
+        def close_dialog(_e=None):
+            self._close_dialog(dlg)
+            self._last_unknown_barcode = ""
+            try:
+                self._run_ui_call(self.txt_search.focus())
+            except Exception:
+                pass
+
+        def save_product(add_to_cart: bool):
+            name = (txt_name.value or "").strip()
+            if not name:
+                msg.value = "Urun adi zorunlu"
+                self.page.update()
+                return
+            price = self._to_float(txt_price.value, 0)
+            stock = self._to_float(txt_stock.value, 0)
+            vat = self._to_float(txt_vat.value, 20)
+            if price < 0 or stock < 0:
+                msg.value = "Fiyat ve stok negatif olamaz"
+                self.page.update()
+                return
+
+            excl, incl = compute_prices(price, vat, "INCL")
+            self.db.upsert_product(
+                barcode=barcode,
+                name=name,
+                category=(txt_category.value or "").strip(),
+                unit=dd_unit.value or "adet",
+                sell_price_excl_vat=excl,
+                sell_price_incl_vat=incl,
+                vat_rate=vat,
+                vat_mode="INCL",
+                stock=stock,
+                critical_stock=0,
+            )
+            self._last_unknown_barcode = ""
+            self.txt_barcode.value = ""
+            self.txt_search.value = ""
+            self._grid_filter_value = ""
+            self._hide_unknown_prompt("all")
+            self.invalidate_product_cache()
+            row = self._find_cached_by_barcode(barcode)
+            self._close_dialog(dlg)
+            self.refresh_products_grid()
+            if add_to_cart and row:
+                self._add_product_to_cart(row)
+            else:
+                self._snack("Urun kaydedildi")
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row(
+                [
+                    ft.Icon(ft.Icons.QR_CODE_SCANNER, color=ft.Colors.ORANGE_700, size=22),
+                    ft.Text("Hizli urun ekle", size=14, weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.ORANGE_700),
+                ],
+                spacing=8,
+            ),
+            content=ft.Container(
+                width=520,
+                content=ft.Column(
+                    [
+                        ft.Text(f"Barkod: {barcode}", size=13, color=ft.Colors.BLUE_GREY_700),
+                        ft.Text(
+                            "Bu barkod kayitli degil. Urunu buradan ekleyip satisa devam edebilirsiniz.",
+                            size=12,
+                            color=ft.Colors.GREY_700,
+                        ),
+                        txt_name,
+                        txt_barcode,
+                        ft.Row([txt_price, txt_stock, txt_vat, dd_unit], wrap=True, spacing=8),
+                        txt_category,
+                        msg,
+                    ],
+                    spacing=8,
+                    tight=True,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Vazgec", icon=ft.Icons.CLOSE, on_click=close_dialog),
+                ft.OutlinedButton("Sadece Kaydet", icon=ft.Icons.SAVE,
+                                  on_click=lambda _: save_product(False)),
+                ft.ElevatedButton(
+                    "Kaydet ve Sepete Ekle",
+                    icon=ft.Icons.ADD_SHOPPING_CART,
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600, color=ft.Colors.WHITE),
+                    on_click=lambda _: save_product(True),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        return self._open_dialog(dlg)
+
+    def _open_unknown_quick(self, source: str):
+        if source == "barcode":
+            barcode = self._normalize_barcode(
+                self._unknown_barcode_value or self.txt_barcode.value or self._last_unknown_barcode
+            )
+        else:
+            barcode = self._normalize_barcode(
+                self._unknown_search_value or self.txt_search.value or self._last_unknown_barcode
+            )
+        if not barcode:
+            self._snack("Once barkod giriniz")
+            return
+        self._show_quick_product_dialog(barcode, force=True)
 
     def _show_barcode_not_found_dialog(self, barcode: str, force: bool = False) -> bool:
         """Barkod yoksa kullanıcıyı Ürün Ekle sayfasına yönlendirmeyi sor."""
@@ -775,26 +993,18 @@ class POSPage(ft.Container):
             pid = int(self.dd_product_picker.value.split(" - ")[0])
         except (ValueError, IndexError):
             return
-        row = next((r for r in self.db.list_products() if r[0] == pid), None)
+        row = self._find_cached_by_id(pid)
         if row:
             self._add_product_to_cart(row)
 
     # ── Ürün grid ─────────────────────────────────────────────────────────────
 
-    def refresh_products_grid(self):
-        search = (self.txt_search.value or "").strip().lower()
-        all_rows = self.db.list_products()
+    def refresh_products_grid(self, force_reload: bool = False):
+        search = (self._grid_filter_value or "").strip().lower()
+        all_rows = self._load_products_cache(force=force_reload)
 
         if self._category_filter:
-            filtered = []
-            for r in all_rows:
-                try:
-                    full = self.db.get_product_full(r[0])
-                    if full and (full[4] or "") == self._category_filter:
-                        filtered.append(r)
-                except Exception:
-                    pass
-            rows = filtered
+            rows = [r for r in all_rows if len(r) > 10 and (r[10] or "") == self._category_filter]
         else:
             rows = all_rows
 
@@ -875,9 +1085,10 @@ class POSPage(ft.Container):
         """Ürün eklendikten sonra barkod/arama alanlarını otomatik temizle."""
         self.txt_barcode.value = ""
         self.txt_search.value = ""
+        self._grid_filter_value = ""
         self._hide_unknown_prompt("all")
         try:
-            self._run_ui_call(self.txt_barcode.focus())
+            self._run_ui_call(self.txt_search.focus())
         except Exception:
             pass
 
@@ -1128,6 +1339,7 @@ class POSPage(ft.Container):
         self.txt_received.value = "0"
         self.txt_discount_pct.value = "0"
         self.txt_discount_amt.value = "0.00"
+        self.invalidate_product_cache()
         self.refresh_products_grid()
         if self.on_sale_completed:
             self.on_sale_completed()
@@ -1155,6 +1367,7 @@ class POSPage(ft.Container):
             self._snack(str(ex))
             return
         self._clear_cart()
+        self.invalidate_product_cache()
         self.refresh_products_grid()
         if self.on_sale_completed:
             self.on_sale_completed()
@@ -1256,9 +1469,7 @@ class POSPage(ft.Container):
         try:
             now = datetime.now().strftime("%d.%m.%Y %H:%M")
             try:
-                with self.db.conn() as conn:
-                    settings = {r[0]: r[1] for r in conn.execute(
-                        "SELECT key, value FROM settings").fetchall()}
+                settings = self.db.list_settings()
             except Exception:
                 settings = {}
             company = settings.get("company_name", "Temel Market")

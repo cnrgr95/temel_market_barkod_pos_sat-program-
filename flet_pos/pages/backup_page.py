@@ -6,14 +6,19 @@ import flet as ft
 
 
 class BackupPage(ft.Container):
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, backup_manager=None, db=None):
         super().__init__(expand=True, padding=10)
         self.base_dir = base_dir
         self.db_path = os.path.join(base_dir, "market.db")
         self.backup_dir = os.path.join(base_dir, "backups")
+        self.backup_manager = backup_manager
+        self.db = db
         os.makedirs(self.backup_dir, exist_ok=True)
 
         self.lbl_db_size = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_500)
+        self.lbl_auto_backup = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_600)
+        self.lbl_drive_status = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_600)
+        self.txt_drive_dir = ft.TextField(label="Google Drive klasoru", expand=True)
 
         self.table = ft.DataTable(
             border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
@@ -58,6 +63,8 @@ class BackupPage(ft.Container):
                                         expand=True, overflow=ft.TextOverflow.ELLIPSIS),
                             ]),
                             self.lbl_db_size,
+                            self.lbl_auto_backup,
+                            self.lbl_drive_status,
                         ], spacing=6),
                     ),
                 ),
@@ -83,6 +90,22 @@ class BackupPage(ft.Container):
                                     size=12, color=ft.Colors.BLUE_GREY_500,
                                 ),
                             ], spacing=10),
+                            ft.Row(
+                                [
+                                    self.txt_drive_dir,
+                                    ft.OutlinedButton(
+                                        "Drive Yolunu Kaydet",
+                                        icon=ft.Icons.CLOUD_DONE,
+                                        on_click=self._save_drive_dir,
+                                    ),
+                                    ft.OutlinedButton(
+                                        "Otomatik Bul",
+                                        icon=ft.Icons.SEARCH,
+                                        on_click=self._detect_drive_dir,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
                         ], spacing=8),
                     ),
                 ),
@@ -129,6 +152,41 @@ class BackupPage(ft.Container):
         except RuntimeError:
             pass
 
+    def _open_dialog(self, dlg):
+        try:
+            if dlg not in self.page.overlay:
+                self.page.overlay.append(dlg)
+            dlg.open = True
+            self.page.update()
+        except RuntimeError:
+            pass
+
+    def _save_drive_dir(self, _e):
+        path = (self.txt_drive_dir.value or "").strip().strip('"')
+        if path and not os.path.isdir(path):
+            self._snack("Google Drive klasoru bulunamadi", ft.Colors.RED_600)
+            return
+        if self.backup_manager:
+            self.backup_manager.google_drive_dir = path
+        if self.db:
+            self.db.set_setting("google_drive_backup_dir", path)
+        self.refresh()
+        self._snack("Google Drive yedek yolu kaydedildi", ft.Colors.GREEN_700)
+
+    def _detect_drive_dir(self, _e):
+        if not self.backup_manager:
+            return
+        path = self.backup_manager.detect_google_drive_dir()
+        self.backup_manager.google_drive_dir = path
+        self.txt_drive_dir.value = path
+        if self.db:
+            self.db.set_setting("google_drive_backup_dir", path)
+        self.refresh()
+        if path:
+            self._snack("Google Drive klasoru bulundu", ft.Colors.GREEN_700)
+        else:
+            self._snack("Google Drive klasoru otomatik bulunamadi", ft.Colors.ORANGE_700)
+
     def _fmt_size(self, path: str) -> str:
         try:
             b = os.path.getsize(path)
@@ -154,6 +212,16 @@ class BackupPage(ft.Container):
 
     def _backup_now(self, _e):
         try:
+            if self.backup_manager:
+                result = self.backup_manager.backup_now(prefix="manual")
+                name = os.path.basename(result.local_path)
+                self.refresh()
+                if result.error:
+                    self._snack(f"Yerel yedek alindi, {result.error}", ft.Colors.ORANGE_700)
+                    return
+                extra = " + Google Drive" if result.drive_path else ""
+                self._snack(f"Yedek alindi{extra}: {name}", ft.Colors.GREEN_700)
+                return
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             target = os.path.join(self.backup_dir, f"market_{stamp}.db")
             self._sqlite_backup_copy(self.db_path, target)
@@ -223,9 +291,7 @@ class BackupPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+        self._open_dialog(dlg)
 
     def _confirm_delete_backup(self, path: str, name: str):
         def _do(_e):
@@ -256,9 +322,7 @@ class BackupPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.dialog = dlg
-        dlg.open = True
-        self.page.update()
+        self._open_dialog(dlg)
 
     # ── Listeyi yenile ────────────────────────────────────────────────────
 
@@ -270,6 +334,21 @@ class BackupPage(ft.Container):
             self.lbl_db_size.value = "Veritabanı bulunamadı!"
 
         # Yedek dosyaları
+        if self.backup_manager:
+            minutes = int(self.backup_manager.interval_seconds / 60)
+            self.lbl_auto_backup.value = f"Otomatik yedekleme: {minutes} dakikada bir aktif"
+            self.txt_drive_dir.value = self.backup_manager.google_drive_dir or ""
+            drive_dir = self.backup_manager.google_backup_dir()
+            if drive_dir:
+                self.lbl_drive_status.value = f"Google Drive: {drive_dir}"
+                self.lbl_drive_status.color = ft.Colors.GREEN_700
+            else:
+                self.lbl_drive_status.value = "Google Drive klasoru bulunamadi. Yerel yedekleme aktif."
+                self.lbl_drive_status.color = ft.Colors.ORANGE_700
+        else:
+            self.lbl_auto_backup.value = "Otomatik yedekleme bu oturumda bagli degil"
+            self.lbl_drive_status.value = ""
+
         files: list[tuple[str, str, str, str]] = []
         if os.path.isdir(self.backup_dir):
             for f in os.listdir(self.backup_dir):

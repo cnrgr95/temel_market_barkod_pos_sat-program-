@@ -20,6 +20,8 @@ class ProductsPage(ft.Container):
         # file_picker parametresi artık kullanılmıyor — tkinter dialog kullanılıyor
         self.selected_image_src = ""
         self._editing_id: int | None = None
+        self._products_cache = []
+        self._products_cache_loaded = False
 
         self.txt_search = ft.TextField(
             label="Urun Ara",
@@ -350,6 +352,7 @@ class ProductsPage(ft.Container):
             self.db.delete_product(product_id)
             dlg.open = False
             self.page.update()
+            self.invalidate_cache()
             self.refresh_table()
             self.on_products_changed()
             self._snack(f"{product_name} silindi")
@@ -414,13 +417,27 @@ class ProductsPage(ft.Container):
             supplier_id=supplier_id,
         )
         self._reset_form()
+        self.invalidate_cache()
         self.refresh_table()
         self.on_products_changed()
         self._snack("Urun eklendi" if is_new else "Urun guncellendi")
 
-    def refresh_table(self):
+    def invalidate_cache(self):
+        self._products_cache = []
+        self._products_cache_loaded = False
+
+    def refresh(self):
+        self.refresh_table(force_reload=True)
+
+    def _load_products(self, force_reload: bool = False):
+        if force_reload or not self._products_cache_loaded:
+            self._products_cache = list(self.db.list_products())
+            self._products_cache_loaded = True
+        return self._products_cache
+
+    def refresh_table(self, force_reload: bool = False):
         search = (self.txt_search.value or "").strip().lower() if hasattr(self, "txt_search") else ""
-        rows = self.db.list_products()
+        rows = self._load_products(force_reload)
         if search:
             rows = [r for r in rows if search in (r[1] or "").lower() or search in (r[2] or "").lower()]
 

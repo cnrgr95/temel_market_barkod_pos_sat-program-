@@ -14,6 +14,7 @@ from flet_pos.pages.sales_history_page import SalesHistoryPage
 from flet_pos.pages.stock_page import StockPage
 from flet_pos.pages.suppliers_page import SuppliersPage
 from flet_pos.pages.users_page import UsersPage
+from flet_pos.services.backup import BackupManager
 
 
 class FletMarketApp:
@@ -23,6 +24,14 @@ class FletMarketApp:
         self.db = DB(os.path.join(self.base_dir, "market.db"))
         self.media_dir = os.path.join(self.base_dir, "product_images")
         os.makedirs(self.media_dir, exist_ok=True)
+        self.backup_manager = BackupManager(
+            base_dir=self.base_dir,
+            db_path=os.path.join(self.base_dir, "market.db"),
+            backup_dir=os.path.join(self.base_dir, "backups"),
+            interval_seconds=7200,
+            google_drive_dir=self.db.get_setting("google_drive_backup_dir", ""),
+        )
+        self.backup_manager.start()
 
         self.page.title = "Temel Market POS - Flet"
         self.page.theme_mode = ft.ThemeMode.LIGHT
@@ -39,6 +48,7 @@ class FletMarketApp:
 
         self.current_user = None
         self.pages = {}
+        self._dirty_pages = set()
         self._active_nav_key = ""
         self.content_host = ft.Container(expand=True)
         self.page.on_resize = self._on_page_resized
@@ -96,7 +106,7 @@ class FletMarketApp:
         self.pages["sales_history"] = SalesHistoryPage(self.db)
         self.pages["cash"] = CashPage(self.db)
         self.pages["users"] = UsersPage(self.db)
-        self.pages["backup"] = BackupPage(self.base_dir)
+        self.pages["backup"] = BackupPage(self.base_dir, backup_manager=self.backup_manager, db=self.db)
         self.pages["hardware"] = HardwarePage()
 
     def _build_layout(self):
@@ -217,6 +227,9 @@ class FletMarketApp:
         for k, btn in self._nav_buttons.items():
             self._update_nav_btn_style(btn, k == key)
         self.show(key)
+        if key in self._dirty_pages:
+            self._dirty_pages.discard(key)
+            self._refresh_page_data(key)
         self.page.update()
 
     def _has_access(self, key: str) -> bool:
@@ -248,20 +261,43 @@ class FletMarketApp:
 
     def _products_changed(self):
         pos = self.pages["pos"]
-        pos.refresh_products_grid()
+        pos.invalidate_product_cache()
+        if self._active_nav_key == "pos":
+            pos.refresh_products_grid()
         if "stock" in self.pages:
-            self.pages["stock"].refresh()
+            self._mark_or_refresh("stock")
 
     def _after_data_change(self):
-        if "reports" in self.pages:
-            self.pages["reports"].refresh()
-        if "stock" in self.pages:
-            self.pages["stock"].refresh()
-        if "customers" in self.pages:
-            self.pages["customers"].refresh()
+        self._mark_or_refresh("reports")
+        self._mark_or_refresh("stock")
+        self._mark_or_refresh("customers")
         if "pos" in self.pages:
             self.pages["pos"].refresh_customers()
-            self.pages["pos"].refresh_products_grid()
+            self.pages["pos"].invalidate_product_cache()
+            if self._active_nav_key == "pos":
+                self.pages["pos"].refresh_products_grid()
+
+    def _mark_or_refresh(self, key: str):
+        if key not in self.pages:
+            return
+        if self._active_nav_key == key:
+            self._refresh_page_data(key)
+        else:
+            self._dirty_pages.add(key)
+
+    def _refresh_page_data(self, key: str):
+        page = self.pages.get(key)
+        if not page:
+            return
+        if key == "pos":
+            page.refresh_customers()
+            page.invalidate_product_cache()
+            page.refresh_products_grid()
+            return
+        if hasattr(page, "refresh"):
+            page.refresh()
+        elif hasattr(page, "refresh_table"):
+            page.refresh_table(force_reload=True)
 
     def _open_product_add_from_pos(self, barcode: str):
         if not self._has_access("products"):
@@ -382,6 +418,7 @@ class FletMarketApp:
         # Overlay bozulmasın — page controls hiç temizlenmez,
         # sadece _root.content swap edilir
         self.pages = {}
+        self._dirty_pages = set()
         self.content_host = ft.Container(
             expand=True,
             padding=ft.padding.only(left=10, right=10, bottom=10, top=6),

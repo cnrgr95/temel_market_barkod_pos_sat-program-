@@ -34,8 +34,12 @@ class DB:
         self._setup()
 
     def conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.db_path)
+        c = sqlite3.connect(self.db_path, timeout=15)
         c.execute("PRAGMA foreign_keys = ON")
+        c.execute("PRAGMA busy_timeout = 15000")
+        c.execute("PRAGMA journal_mode = WAL")
+        c.execute("PRAGMA synchronous = NORMAL")
+        c.execute("PRAGMA temp_store = MEMORY")
         return c
 
     def _setup(self) -> None:
@@ -190,6 +194,9 @@ class DB:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items(product_id)")
 
             self._migrate_all(cur)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_prod_active_barcode ON products(is_active, barcode)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_prod_active_name ON products(is_active, name)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_prod_active_category ON products(is_active, category)")
 
             # Varsayilan admin - ilk kurulumda olustur
             admin_exists = cur.execute("SELECT COUNT(*) FROM app_users WHERE role='ADMIN'").fetchone()[0]
@@ -378,6 +385,35 @@ class DB:
             return "setting_key", "setting_value"
         return "key", "value"
 
+    def list_settings(self) -> dict[str, str]:
+        with self.conn() as conn:
+            key_col, value_col = self._settings_columns(conn.cursor())
+            rows = conn.execute(f"SELECT {key_col}, {value_col} FROM settings").fetchall()
+        return {str(k): str(v) for k, v in rows}
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.conn() as conn:
+            key_col, value_col = self._settings_columns(conn.cursor())
+            row = conn.execute(
+                f"SELECT {value_col} FROM settings WHERE {key_col}=?",
+                (key,),
+            ).fetchone()
+        return str(row[0]) if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.conn() as conn:
+            cur = conn.cursor()
+            key_col, value_col = self._settings_columns(cur)
+            cur.execute(
+                f"""
+                INSERT INTO settings ({key_col}, {value_col})
+                VALUES (?, ?)
+                ON CONFLICT({key_col}) DO UPDATE SET {value_col}=excluded.{value_col}
+                """,
+                (key, value),
+            )
+            conn.commit()
+
     # ── Ürünler ──────────────────────────────────────────────────────────────
 
     def upsert_product(
@@ -475,7 +511,7 @@ class DB:
             return conn.execute(
                 f"""
                 SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
-                       stock, image_path, is_scale_product, critical_stock
+                       stock, image_path, is_scale_product, critical_stock, category
                 FROM products {where}
                 ORDER BY name
                 """
