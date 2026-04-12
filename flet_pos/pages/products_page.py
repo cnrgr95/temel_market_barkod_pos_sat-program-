@@ -20,8 +20,6 @@ class ProductsPage(ft.Container):
 
         self.selected_image_src = ""
         self._editing_id: int | None = None
-        self._products_cache = []
-        self._products_cache_loaded = False
         self._quick_product_ids = self._load_quick_product_ids()
 
         # --- Arama ---
@@ -29,7 +27,7 @@ class ProductsPage(ft.Container):
             label="Urun Ara",
             prefix_icon=ft.Icons.SEARCH,
             width=300,
-            on_change=lambda _: self.refresh_table(),
+            on_change=lambda _: self._schedule_refresh_table(),
         )
         self.dd_filter_group = ft.Dropdown(
             label="Grup Filtrele",
@@ -118,6 +116,25 @@ class ProductsPage(ft.Container):
             on_click=lambda _: self._reset_form(),
         )
 
+        self._table_page_index = 0
+        self._table_page_size = 100
+        self._table_total = 0
+        self._table_query_key = ("", "")
+        self._search_timer = None
+        self._show_list_images = True
+        self._quick_search_timer = None
+        self.lbl_page_info = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_600)
+        self.btn_page_prev = ft.IconButton(
+            ft.Icons.ARROW_BACK,
+            tooltip="Onceki sayfa",
+            on_click=lambda _: self._goto_prev_page(),
+        )
+        self.btn_page_next = ft.IconButton(
+            ft.Icons.ARROW_FORWARD,
+            tooltip="Sonraki sayfa",
+            on_click=lambda _: self._goto_next_page(),
+        )
+
         self.products_list = ft.Column(spacing=6)
 
         self.dd_vat_mode.on_select = lambda _: self._refresh_price_labels()
@@ -176,6 +193,13 @@ class ProductsPage(ft.Container):
         self._editing_cat_key: tuple[str, str] = ("", "")
         self.cats_list = ft.Column(spacing=6)
 
+        self.txt_quick_add_search = ft.TextField(
+            label="Urun ara",
+            expand=True,
+            prefix_icon=ft.Icons.SEARCH,
+            on_change=lambda _: self._schedule_quick_add_refresh(),
+        )
+
         # --- Tab yapisi (Flet 0.84: TabBar + TabBarView + Tabs controller) ---
         _tab_contents = [
             ft.Container(
@@ -183,10 +207,16 @@ class ProductsPage(ft.Container):
                 content=ft.Column(
                     expand=True, scroll=ft.ScrollMode.AUTO, spacing=12,
                     controls=[
-                        self._build_quick_list_card(),
                         self._build_form_card(),
                         self._build_products_card(),
                     ],
+                ),
+            ),
+            ft.Container(
+                expand=True,
+                content=ft.Column(
+                    expand=True, scroll=ft.ScrollMode.AUTO, spacing=12,
+                    controls=[self._build_quick_list_card()],
                 ),
             ),
             ft.Container(
@@ -206,13 +236,14 @@ class ProductsPage(ft.Container):
         ]
         self._tabs = ft.Tabs(
             selected_index=0,
-            length=3,
+            length=4,
             content=ft.Column(
                 expand=True,
                 spacing=0,
                 controls=[
                     ft.TabBar(tabs=[
                         ft.Tab(label="Urun Listesi", icon=ft.Icons.INVENTORY_2),
+                        ft.Tab(label="Hizli Satis Listesi", icon=ft.Icons.STAR),
                         ft.Tab(label="Toplu Fiyat Degistir", icon=ft.Icons.PRICE_CHANGE),
                         ft.Tab(label="Kategori / Grup Yonetimi", icon=ft.Icons.CATEGORY),
                     ]),
@@ -240,6 +271,7 @@ class ProductsPage(ft.Container):
                 spacing=12,
                 controls=[
                     ft.Text("Hizli Satis Listesi", size=17, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
+                    ft.Row([self.txt_quick_add_search], spacing=10),
                     ft.Row([ft.Container(expand=True, content=self.dd_quick_add), self.btn_quick_add], spacing=10),
                     self.lbl_quick_summary,
                     self.quick_selection_list,
@@ -299,6 +331,11 @@ class ProductsPage(ft.Container):
                         self.txt_search,
                         self.dd_filter_group,
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=8),
+                    ft.Row(
+                        [self.btn_page_prev, self.lbl_page_info, self.btn_page_next],
+                        alignment=ft.MainAxisAlignment.END,
+                        spacing=6,
+                    ),
                     self.products_list,
                 ],
             ),
@@ -594,7 +631,7 @@ class ProductsPage(ft.Container):
         return result
 
     def _save_quick_product_ids(self, available_rows: list | None = None):
-        rows = available_rows if available_rows is not None else self._load_products()
+        rows = available_rows if available_rows is not None else self.db.get_products_by_ids(self._quick_product_ids)
         valid_ids = {int(r[0]) for r in rows if r and r[0] is not None}
         cleaned: list[int] = []
         for product_id in self._quick_product_ids:
@@ -611,6 +648,23 @@ class ProductsPage(ft.Container):
         ]
         valid_ids = {str(r[0]) for r in rows}
         self.dd_quick_add.value = current if current in valid_ids else None
+
+    def _refresh_quick_add_options_from_search(self):
+        query = (self.txt_quick_add_search.value or "").strip()
+        rows = self.db.search_products(search=query, limit=200, offset=0)
+        self._refresh_quick_add_options(rows)
+        self._safe_update()
+
+    def _schedule_quick_add_refresh(self, delay: float = 0.25):
+        try:
+            if self._quick_search_timer:
+                self._quick_search_timer.cancel()
+        except Exception:
+            pass
+        import threading
+        self._quick_search_timer = threading.Timer(delay, self._refresh_quick_add_options_from_search)
+        self._quick_search_timer.daemon = True
+        self._quick_search_timer.start()
 
     def _add_selected_quick_product(self):
         if not self.dd_quick_add.value:
@@ -657,7 +711,7 @@ class ProductsPage(ft.Container):
         self.on_products_changed()
 
     def _refresh_quick_selection_panel(self, all_rows: list | None = None):
-        rows = all_rows if all_rows is not None else self._load_products()
+        rows = all_rows if all_rows is not None else self.db.get_products_by_ids(self._quick_product_ids)
         row_map = {int(r[0]): r for r in rows if r and r[0] is not None}
         valid_ids = [pid for pid in self._quick_product_ids if pid in row_map]
         if valid_ids != self._quick_product_ids:
@@ -1004,7 +1058,7 @@ class ProductsPage(ft.Container):
         group_name = self.dd_bulk_group.value or ""
         category_name = self.dd_bulk_category.value or ""
         affected = []
-        for r in self._load_products(force_reload=True):
+        for r in self.db.list_products_by_scope(scope=scope, group_name=group_name, category_name=category_name):
             group = (r[10] or "") if len(r) > 10 else ""
             sub_category = (r[11] or "") if len(r) > 11 else ""
             if scope == "GROUP" and group_name and group != group_name:
@@ -1376,7 +1430,7 @@ class ProductsPage(ft.Container):
 
         thumb = (
             ft.Image(src=image_path, width=58, height=58, fit=ft.BoxFit.COVER, border_radius=8)
-            if image_path and os.path.exists(image_path)
+            if (image_path and self._show_list_images)
             else ft.Container(
                 width=58, height=58, bgcolor=ft.Colors.GREY_100,
                 border_radius=8, alignment=ft.Alignment(0, 0),
@@ -1460,8 +1514,8 @@ class ProductsPage(ft.Container):
     # ── Cache ve refresh ──────────────────────────────────────────────────────
 
     def invalidate_cache(self):
-        self._products_cache = []
-        self._products_cache_loaded = False
+        self._table_query_key = ("", "")
+        self._table_page_index = 0
 
     def refresh(self):
         self._load_category_dropdowns()
@@ -1469,27 +1523,70 @@ class ProductsPage(ft.Container):
         self.refresh_table(force_reload=True)
         self._refresh_taxonomy_lists()
 
-    def _load_products(self, force_reload: bool = False):
-        if force_reload or not self._products_cache_loaded:
-            self._products_cache = list(self.db.list_products())
-            self._products_cache_loaded = True
-        return self._products_cache
+    def _goto_prev_page(self):
+        if self._table_page_index <= 0:
+            return
+        self._table_page_index -= 1
+        self.refresh_table()
+
+    def _goto_next_page(self):
+        max_page = max(0, (self._table_total - 1) // self._table_page_size)
+        if self._table_page_index >= max_page:
+            return
+        self._table_page_index += 1
+        self.refresh_table()
+
+    def _schedule_refresh_table(self, delay: float = 0.25):
+        try:
+            if self._search_timer:
+                self._search_timer.cancel()
+        except Exception:
+            pass
+        import threading
+        self._search_timer = threading.Timer(delay, self.refresh_table)
+        self._search_timer.daemon = True
+        self._search_timer.start()
+
+    def schedule_refresh_table(self, *, force_reload: bool = False, delay: float = 0.05):
+        try:
+            if self._search_timer:
+                self._search_timer.cancel()
+        except Exception:
+            pass
+        import threading
+        self._search_timer = threading.Timer(delay, lambda: self.refresh_table(force_reload=force_reload))
+        self._search_timer.daemon = True
+        self._search_timer.start()
 
     def refresh_table(self, force_reload: bool = False):
         try:
             search = (self.txt_search.value or "").strip().lower() if hasattr(self, "txt_search") else ""
             group_filter = (self.dd_filter_group.value or "") if hasattr(self, "dd_filter_group") else ""
-            all_rows = self._load_products(force_reload)
-            self._refresh_quick_add_options(all_rows)
-            self._refresh_quick_selection_panel(all_rows)
-            rows = all_rows
+            query_key = (search, group_filter)
+            if query_key != self._table_query_key:
+                self._table_query_key = query_key
+                self._table_page_index = 0
 
-            if group_filter:
-                rows = [r for r in rows if (r[10] or "") == group_filter]
-            if search:
-                rows = [r for r in rows if search in (r[1] or "").lower() or search in (r[2] or "").lower()]
+            self._table_total = self.db.count_products(search=search, category=group_filter)
+            self._show_list_images = self._table_total <= 5000
+            max_page = max(0, (self._table_total - 1) // self._table_page_size) if self._table_total else 0
+            if self._table_page_index > max_page:
+                self._table_page_index = max_page
+            offset = self._table_page_index * self._table_page_size
+            rows = self.db.search_products(
+                search=search,
+                category=group_filter,
+                limit=self._table_page_size,
+                offset=offset,
+            )
+
+            self._refresh_quick_add_options_from_search()
+            self._refresh_quick_selection_panel()
 
             if not rows:
+                self.lbl_page_info.value = "0 urun"
+                self.btn_page_prev.disabled = True
+                self.btn_page_next.disabled = True
                 self.products_list.controls = [
                     ft.Container(
                         padding=ft.padding.symmetric(vertical=12),
@@ -1497,6 +1594,12 @@ class ProductsPage(ft.Container):
                     )
                 ]
             else:
+                total_pages = max_page + 1 if self._table_total else 1
+                self.lbl_page_info.value = (
+                    f"Sayfa {self._table_page_index + 1}/{total_pages} | Toplam {self._table_total}"
+                )
+                self.btn_page_prev.disabled = self._table_page_index <= 0
+                self.btn_page_next.disabled = self._table_page_index >= max_page
                 self.products_list.controls = [self._build_product_row(r) for r in rows]
             self._safe_update()
         except Exception as ex:

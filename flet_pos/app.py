@@ -96,24 +96,37 @@ class FletMarketApp:
             pass
 
     def _build_pages(self):
-        self.pages["pos"] = POSPage(
-            self.db,
-            on_sale_completed=self._after_data_change,
-            current_user=self.current_user,
-            on_unknown_barcode=self._open_product_add_from_pos,
-        )
-        products_page = ProductsPage(self.db, self.media_dir, on_products_changed=self._products_changed)
-        self.pages["products"] = products_page
-        self.pages["barcode_center"] = BarcodePage(self.db, self.base_dir)
-        self.pages["stock"] = StockPage(self.db, on_stock_changed=self._products_changed)
-        self.pages["customers"] = CustomersPage(self.db)
-        self.pages["suppliers"] = SuppliersPage(self.db)
-        self.pages["reports"] = ReportsPage(self.db)
-        self.pages["sales_history"] = SalesHistoryPage(self.db)
-        self.pages["cash"] = CashPage(self.db)
-        self.pages["users"] = UsersPage(self.db)
-        self.pages["backup"] = BackupPage(self.base_dir, backup_manager=self.backup_manager, db=self.db)
-        self.pages["hardware"] = HardwarePage()
+        self._page_factories = {
+            "pos": lambda: POSPage(
+                self.db,
+                on_sale_completed=self._after_data_change,
+                current_user=self.current_user,
+                on_unknown_barcode=self._open_product_add_from_pos,
+            ),
+            "products": lambda: ProductsPage(self.db, self.media_dir, on_products_changed=self._products_changed),
+            "barcode_center": lambda: BarcodePage(self.db, self.base_dir),
+            "stock": lambda: StockPage(self.db, on_stock_changed=self._products_changed),
+            "customers": lambda: CustomersPage(self.db),
+            "suppliers": lambda: SuppliersPage(self.db),
+            "reports": lambda: ReportsPage(self.db),
+            "sales_history": lambda: SalesHistoryPage(self.db),
+            "cash": lambda: CashPage(self.db),
+            "users": lambda: UsersPage(self.db),
+            "backup": lambda: BackupPage(self.base_dir, backup_manager=self.backup_manager, db=self.db),
+            "hardware": lambda: HardwarePage(),
+        }
+        # Create only POS page immediately; others are lazy-loaded on navigation
+        self.pages["pos"] = self._page_factories["pos"]()
+
+    def _ensure_page(self, key: str):
+        if key in self.pages:
+            return self.pages[key]
+        factory = self._page_factories.get(key)
+        if not factory:
+            return None
+        page = factory()
+        self.pages[key] = page
+        return page
 
     def _build_layout(self):
         destinations = [
@@ -239,10 +252,11 @@ class FletMarketApp:
         self._active_nav_key = key
         for k, btn in self._nav_buttons.items():
             self._update_nav_btn_style(btn, k == key)
+        self._ensure_page(key)
         self.show(key)
         if key in self._dirty_pages:
             self._dirty_pages.discard(key)
-            self._refresh_page_data(key)
+            self._schedule_refresh_page_data(key)
         self.page.update()
 
     def _has_access(self, key: str) -> bool:
@@ -294,24 +308,45 @@ class FletMarketApp:
 
     def _mark_or_refresh(self, key: str):
         if key not in self.pages:
+            self._dirty_pages.add(key)
             return
         if self._active_nav_key == key:
-            self._refresh_page_data(key)
+            self._schedule_refresh_page_data(key)
         else:
             self._dirty_pages.add(key)
 
+    def _schedule_refresh_page_data(self, key: str, delay: float = 0.05):
+        try:
+            if not hasattr(self, "_refresh_timers"):
+                self._refresh_timers = {}
+            t = self._refresh_timers.get(key)
+            if t:
+                t.cancel()
+        except Exception:
+            pass
+        import threading
+        timer = threading.Timer(delay, lambda: self._refresh_page_data(key))
+        timer.daemon = True
+        self._refresh_timers[key] = timer
+        timer.start()
+
     def _refresh_page_data(self, key: str):
-        page = self.pages.get(key)
+        page = self._ensure_page(key)
         if not page:
             return
         if key == "pos":
             page.refresh_customers()
             page.invalidate_product_cache()
-            page.refresh_products_grid()
+            if hasattr(page, "schedule_refresh_products_grid"):
+                page.schedule_refresh_products_grid(force_reload=True)
+            else:
+                page.refresh_products_grid()
             return
         if key == "products":
             # ProductsPage has no single refresh() — call its data-loading methods
-            if hasattr(page, "refresh_table"):
+            if hasattr(page, "schedule_refresh_table"):
+                page.schedule_refresh_table(force_reload=True)
+            elif hasattr(page, "refresh_table"):
                 page.refresh_table(force_reload=True)
             if hasattr(page, "_load_suppliers"):
                 page._load_suppliers()
@@ -378,13 +413,16 @@ class FletMarketApp:
                         pass
 
     def show(self, key: str):
-        self.content_host.content = self.pages[key]
+        page = self._ensure_page(key)
+        if not page:
+            return
+        self.content_host.content = page
         self.page.update()
         # Trigger initial data load on first visit (did_mount is not called on
         # ft.Container subclasses in Flet 0.84 – we simulate it here)
         if key not in self._shown_pages:
             self._shown_pages.add(key)
-            self._refresh_page_data(key)
+            self._schedule_refresh_page_data(key)
             self.page.update()  # Force full repaint after data is loaded
 
     def _show_login(self):

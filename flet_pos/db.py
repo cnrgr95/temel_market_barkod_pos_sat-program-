@@ -48,6 +48,8 @@ class DB:
         c.execute("PRAGMA journal_mode = WAL")
         c.execute("PRAGMA synchronous = NORMAL")
         c.execute("PRAGMA temp_store = MEMORY")
+        c.execute("PRAGMA cache_size = -8000")
+        c.execute("PRAGMA mmap_size = 67108864")
         return c
 
     def _setup(self) -> None:
@@ -662,6 +664,125 @@ class DB:
                 """
             ).fetchall()
 
+    def count_products(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        stock_filter: str = "ALL",
+        include_inactive: bool = False,
+    ) -> int:
+        where_parts = []
+        params: list = []
+        if not include_inactive:
+            where_parts.append("COALESCE(is_active,1)=1")
+        if category:
+            where_parts.append("category=?")
+            params.append(category)
+        if search:
+            s = search.strip()
+            pattern = f"{s}%" if len(s) >= 3 and (" " not in s) else f"%{s}%"
+            where_parts.append("(name LIKE ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE)")
+            params.extend([pattern, pattern])
+        stock_filter = (stock_filter or "ALL").upper()
+        if stock_filter == "LOW":
+            where_parts.append("stock > 0 AND stock <= COALESCE(critical_stock, 5)")
+        elif stock_filter == "OUT":
+            where_parts.append("stock <= 0")
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        with self.conn() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM products {where_sql}",
+                params,
+            ).fetchone()
+            return int(row[0] or 0)
+
+    def search_products(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        stock_filter: str = "ALL",
+        limit: int = 200,
+        offset: int = 0,
+        include_inactive: bool = False,
+    ):
+        where_parts = []
+        params: list = []
+        if not include_inactive:
+            where_parts.append("COALESCE(is_active,1)=1")
+        if category:
+            where_parts.append("category=?")
+            params.append(category)
+        if search:
+            s = search.strip()
+            pattern = f"{s}%" if len(s) >= 3 and (" " not in s) else f"%{s}%"
+            where_parts.append("(name LIKE ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE)")
+            params.extend([pattern, pattern])
+        stock_filter = (stock_filter or "ALL").upper()
+        if stock_filter == "LOW":
+            where_parts.append("stock > 0 AND stock <= COALESCE(critical_stock, 5)")
+        elif stock_filter == "OUT":
+            where_parts.append("stock <= 0")
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        params.extend([int(limit), int(offset)])
+        with self.conn() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
+                       stock, image_path, is_scale_product, critical_stock, category, sub_category
+                FROM products {where_sql}
+                ORDER BY name
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+
+    def list_products_by_scope(self, *, scope: str = "ALL", group_name: str = "", category_name: str = ""):
+        scope = (scope or "ALL").upper()
+        where_parts = ["COALESCE(is_active,1)=1"]
+        params: list = []
+        if scope == "GROUP" and group_name:
+            where_parts.append("category=?")
+            params.append(group_name)
+        elif scope == "CATEGORY":
+            if group_name:
+                where_parts.append("category=?")
+                params.append(group_name)
+            if category_name:
+                where_parts.append("sub_category=?")
+                params.append(category_name)
+        with self.conn() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
+                       stock, image_path, is_scale_product, critical_stock, category, sub_category
+                FROM products
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY name
+                """,
+                params,
+            ).fetchall()
+
+    def get_products_by_ids(self, ids: list[int]):
+        cleaned = [int(i) for i in ids if i is not None]
+        if not cleaned:
+            return []
+        placeholders = ",".join("?" for _ in cleaned)
+        with self.conn() as conn:
+            return conn.execute(
+                f"""
+                SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
+                       stock, image_path, is_scale_product, critical_stock, category, sub_category
+                FROM products
+                WHERE id IN ({placeholders}) AND COALESCE(is_active,1)=1
+                ORDER BY name
+                """,
+                cleaned,
+            ).fetchall()
+
     def list_categories(self) -> list[str]:
         with self.conn() as conn:
             rows = conn.execute(
@@ -1105,6 +1226,100 @@ class DB:
                 "INSERT INTO stock_moves (move_time,product_id,product_name,move_type,qty,note) VALUES(?,?,?,?,?,?)",
                 (_now(), product_id, name, move_type.upper(), qty, note),
             )
+            conn.commit()
+
+    def bulk_update_stock_levels(self, updates: list[tuple[int, float]], *, mode: str = "SET", note: str = "") -> int:
+        """Bulk update stock levels. mode=SET sets exact stock, mode=ADD adds/subtracts."""
+        mode = (mode or "SET").upper()
+        cleaned: list[tuple[int, float]] = []
+        for product_id, qty in updates or []:
+            try:
+                pid = int(product_id)
+                amount = float(qty)
+            except (TypeError, ValueError):
+                continue
+            cleaned.append((pid, amount))
+        if not cleaned:
+            return 0
+
+        updated = 0
+        with self.conn() as conn:
+            cur = conn.cursor()
+            for product_id, amount in cleaned:
+                row = cur.execute(
+                    "SELECT name, stock FROM products WHERE id=? AND COALESCE(is_active,1)=1",
+                    (product_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                name, cur_stock = row[0], float(row[1] or 0)
+                if mode == "ADD":
+                    new_stock = cur_stock + amount
+                    diff = amount
+                    move_type = "IN" if diff >= 0 else "OUT"
+                else:
+                    new_stock = amount
+                    diff = new_stock - cur_stock
+                    move_type = "ADJUST"
+                if new_stock < 0:
+                    continue
+                cur.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, product_id))
+                if abs(diff) > 0.0001:
+                    cur.execute(
+                        "INSERT INTO stock_moves (move_time,product_id,product_name,move_type,qty,note) VALUES(?,?,?,?,?,?)",
+                        (_now(), product_id, name, move_type, abs(diff), note or "Toplu stok guncelleme"),
+                    )
+                updated += 1
+            conn.commit()
+        return updated
+
+    def update_product_stock_pricing(
+        self,
+        product_id: int,
+        *,
+        buy_price: float | None = None,
+        sell_price_incl: float | None = None,
+        stock: float | None = None,
+        critical_stock: float | None = None,
+    ) -> None:
+        with self.conn() as conn:
+            cur = conn.cursor()
+            row = cur.execute(
+                "SELECT name, stock, vat_rate FROM products WHERE id=? AND COALESCE(is_active,1)=1",
+                (product_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("Urun bulunamadi")
+            name, cur_stock, vat_rate = row[0], float(row[1] or 0), float(row[2] or 0)
+            updates = []
+            params: list = []
+            if buy_price is not None:
+                updates.append("buy_price=?")
+                params.append(float(buy_price))
+            if sell_price_incl is not None:
+                incl = float(sell_price_incl)
+                excl = incl / (1 + vat_rate / 100.0) if vat_rate > -100 else incl
+                updates.append("sell_price_incl_vat=?")
+                params.append(incl)
+                updates.append("sell_price_excl_vat=?")
+                params.append(excl)
+            if stock is not None:
+                updates.append("stock=?")
+                params.append(float(stock))
+            if critical_stock is not None:
+                updates.append("critical_stock=?")
+                params.append(float(critical_stock))
+            if updates:
+                params.append(product_id)
+                cur.execute(f"UPDATE products SET {', '.join(updates)} WHERE id=?", params)
+            if stock is not None:
+                diff = float(stock) - cur_stock
+                if abs(diff) > 0.0001:
+                    move_type = "ADJUST"
+                    cur.execute(
+                        "INSERT INTO stock_moves (move_time,product_id,product_name,move_type,qty,note) VALUES(?,?,?,?,?,?)",
+                        (_now(), product_id, name, move_type, abs(diff), "Stok duzenleme"),
+                    )
             conn.commit()
 
     def list_stock_moves(self, limit: int = 500, date_from: str = "", date_to: str = ""):

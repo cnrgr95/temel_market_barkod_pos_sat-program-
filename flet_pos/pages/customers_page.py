@@ -92,47 +92,6 @@ class CustomersPage(ft.Container):
 
     def _build_layout(self):
         # ── Left panel: compact customer list ────────────────────────────────
-        left_panel = ft.Container(
-            width=320,
-            content=ft.Column(
-                spacing=8,
-                expand=True,
-                controls=[
-                    ft.Row(
-                        [
-                            ft.Icon(ft.Icons.PEOPLE, color=ft.Colors.INDIGO_600, size=18),
-                            ft.Text(
-                                "Müşteri Listesi",
-                                size=14,
-                                weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.INDIGO_700,
-                                expand=True,
-                            ),
-                            ft.ElevatedButton(
-                                "Yeni",
-                                icon=ft.Icons.PERSON_ADD,
-                                on_click=self._reset_form,
-                                height=32,
-                                style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=10)),
-                            ),
-                        ],
-                        spacing=6,
-                    ),
-                    self.txt_search,
-                    ft.Container(
-                        expand=True,
-                        bgcolor=ft.Colors.WHITE,
-                        border_radius=10,
-                        border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
-                        padding=6,
-                        content=self.customer_list_col,
-                    ),
-                    self.lbl_total_debt,
-                ],
-            ),
-        )
-
-        # ── Right panel: form + payment + history ─────────────────────────────
         form_card = ft.Container(
             bgcolor=ft.Colors.WHITE,
             border_radius=12,
@@ -211,32 +170,62 @@ class CustomersPage(ft.Container):
             ),
         )
 
-        right_panel = ft.Container(
-            expand=True,
+        top_list = ft.Container(
+            bgcolor=ft.Colors.WHITE,
+            border_radius=12,
+            padding=12,
             content=ft.Column(
-                spacing=10,
-                expand=True,
+                spacing=8,
                 controls=[
-                    ft.Text(
-                        "Cari Hesap (Veresiye)",
-                        size=16,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.INDIGO_700,
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.PEOPLE, color=ft.Colors.INDIGO_600, size=18),
+                            ft.Text("Musteri Listesi", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.INDIGO_700),
+                            ft.Container(expand=True),
+                            ft.ElevatedButton(
+                                "Yeni",
+                                icon=ft.Icons.PERSON_ADD,
+                                on_click=self._reset_form,
+                                height=32,
+                                style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=10)),
+                            ),
+                        ],
+                        spacing=6,
                     ),
-                    form_card,
-                    payment_card,
-                    history_card,
+                    ft.Row([self.txt_search, self.lbl_total_debt], spacing=10),
+                    ft.Container(
+                        height=220,
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=10,
+                        border=ft.border.all(1, ft.Colors.BLUE_GREY_100),
+                        padding=6,
+                        content=self.customer_list_col,
+                    ),
                 ],
             ),
         )
 
-        return ft.Row(
+        right_panel = ft.Column(
+            spacing=10,
+            expand=True,
+            controls=[
+                ft.Text(
+                    "Cari Hesap (Veresiye)",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.INDIGO_700,
+                ),
+                form_card,
+                payment_card,
+                history_card,
+            ],
+        )
+
+        return ft.Column(
             expand=True,
             spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.START,
             controls=[
-                left_panel,
-                ft.VerticalDivider(width=1, color=ft.Colors.BLUE_GREY_100),
+                top_list,
                 right_panel,
             ],
         )
@@ -743,3 +732,4 @@ class CustomersPage(ft.Container):
             self.history_col.controls = []
         self._render_list()
         self._safe_update()
+

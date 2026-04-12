@@ -37,7 +37,7 @@ class BackupPage(ft.Container):
         )
         self.txt_drive_dir = ft.TextField(label="Google Drive klasoru", expand=True)
         self.txt_local_dir = ft.TextField(
-            label="Yerel yedek klasörü (boş = varsayılan)", expand=True, read_only=True
+            label="Yerel yedek klasoru (bos = varsayilan)", expand=True, read_only=True
         )
         self.txt_interval_minutes = ft.TextField(label="Otomatik yedek dakika", value="120", width=180)
 
@@ -53,9 +53,9 @@ class BackupPage(ft.Container):
                     [
                         ft.Column(
                             [
-                                ft.Text("Veri Güvenliği ve Yedekleme", size=24, weight=ft.FontWeight.W_700),
+                                ft.Text("Veri Guvenligi ve Yedekleme", size=24, weight=ft.FontWeight.W_700),
                                 ft.Text(
-                                    "Yedek hedefini seçin, bir sonraki otomatik yedeğe kalan süreyi izleyin.",
+                                    "Yedek hedefini secin, bir sonraki otomatik yedeke kalan sureyi izleyin.",
                                     size=12,
                                     color=ft.Colors.BLUE_GREY_600,
                                 ),
@@ -66,7 +66,7 @@ class BackupPage(ft.Container):
                         ft.Row(
                             [
                                 ft.ElevatedButton(
-                                    "Şimdi Yedek Al",
+                                    "Simdi Yedek Al",
                                     icon=ft.Icons.BACKUP,
                                     style=ft.ButtonStyle(bgcolor=ft.Colors.INDIGO_600, color=ft.Colors.WHITE),
                                     on_click=self._backup_now,
@@ -173,12 +173,12 @@ class BackupPage(ft.Container):
                         [
                             ft.Container(expand=True, content=self.txt_local_dir),
                             ft.OutlinedButton(
-                                "Klasör Seç",
+                                "Klasor Sec",
                                 icon=ft.Icons.FOLDER_OPEN,
                                 on_click=self._pick_local_dir,
                             ),
                             ft.OutlinedButton(
-                                "Varsayılana Sıfırla",
+                                "Varsayilana Sifirla",
                                 icon=ft.Icons.RESTORE,
                                 on_click=self._reset_local_dir,
                             ),
@@ -336,7 +336,7 @@ class BackupPage(ft.Container):
         self._snack("Google Drive yolu kaydedildi", ft.Colors.GREEN_700)
 
     def _pick_local_dir(self, _e):
-        """tkinter ile yerel yedek klasörü seç (arka planda çalışır)."""
+        """tkinter ile yerel yedek klasoru sec (arka planda calisir)."""
         def _pick():
             try:
                 import tkinter as tk
@@ -344,7 +344,7 @@ class BackupPage(ft.Container):
                 root = tk.Tk()
                 root.withdraw()
                 root.attributes("-topmost", True)
-                chosen = filedialog.askdirectory(title="Yedek Klasörü Seç")
+                chosen = filedialog.askdirectory(title="Yedek Klasoru Sec")
                 root.destroy()
                 if chosen:
                     self.backup_dir = chosen
@@ -355,9 +355,9 @@ class BackupPage(ft.Container):
                     if self.db:
                         self.db.set_setting("local_backup_dir", chosen)
                     self.refresh()
-                    self._snack(f"Yerel yedek klasörü: {chosen}", ft.Colors.GREEN_700)
+                    self._snack(f"Yerel yedek klasoru: {chosen}", ft.Colors.GREEN_700)
             except Exception as ex:
-                self._snack(f"Klasör seçilemedi: {ex}", ft.Colors.RED_600)
+                self._snack(f"Klasor Secilemedi: {ex}", ft.Colors.RED_600)
 
         threading.Thread(target=_pick, daemon=True).start()
 
@@ -370,10 +370,10 @@ class BackupPage(ft.Container):
         if self.db:
             self.db.set_setting("local_backup_dir", "")
         self.refresh()
-        self._snack("Varsayılan klasöre döndürüldü", ft.Colors.GREEN_700)
+        self._snack("Varsayilan klasore donduruldu", ft.Colors.GREEN_700)
 
     def _backup_zip(self, _e):
-        """Veritabanını ZIP olarak dışa aktarır."""
+        """Veritabanini ZIP olarak disa aktarir."""
         def _do_zip():
             try:
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -381,9 +381,9 @@ class BackupPage(ft.Container):
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     zf.write(self.db_path, arcname="market.db")
                 self.refresh()
-                self._snack(f"ZIP yedek alındı: market_zip_{stamp}.zip", ft.Colors.GREEN_700)
+                self._snack(f"ZIP yedek alindi: market_zip_{stamp}.zip", ft.Colors.GREEN_700)
             except Exception as ex:
-                self._snack(f"ZIP yedekleme hatası: {ex}", ft.Colors.RED_600)
+                self._snack(f"ZIP yedekleme hatasi: {ex}", ft.Colors.RED_600)
 
         threading.Thread(target=_do_zip, daemon=True).start()
 
@@ -616,9 +616,9 @@ class BackupPage(ft.Container):
 
     def refresh(self):
         if os.path.exists(self.db_path):
-            self.lbl_db_size.value = f"Veritabanı boyutu: {self._fmt_size(self.db_path)}"
+            self.lbl_db_size.value = f"Veritabani boyutu: {self._fmt_size(self.db_path)}"
         else:
-            self.lbl_db_size.value = "Veritabanı bulunamadı"
+            self.lbl_db_size.value = "Veritabani bulunamadi"
 
         # Keep the page and backup service on the same local backup directory.
         default_local = os.path.join(self.base_dir, "backups")
@@ -683,4 +683,8 @@ class BackupPage(ft.Container):
 
         self._build_file_rows()
         self._build_log_rows()
+        if self._stop_live.is_set():
+            self._stop_live.clear()
+        self._start_live_refresh()
         self._safe_update()
+

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import flet as ft
 
-from flet_pos.services.barcode import ean13_svg
+from flet_pos.services.barcode import ean13_svg, sanitize_digits
 
 
 class BarcodePage(ft.Container):
@@ -18,12 +18,13 @@ class BarcodePage(ft.Container):
         self._products_cache_loaded = False
         self._shelf_items: list[dict] = []
         self._last_shelf_output = ""
+        self._search_timer = None
 
         self.txt_shelf_search = ft.TextField(
             label="Urun ara",
             prefix_icon=ft.Icons.SEARCH,
             width=420,
-            on_change=lambda _: self._refresh_shelf_candidates(),
+            on_change=lambda _: self._schedule_shelf_search(),
         )
         self.chk_show_price = ft.Checkbox(label="Fiyati goster", value=True)
         self.chk_show_barcode = ft.Checkbox(label="Barkodu goster", value=True)
@@ -145,28 +146,19 @@ class BarcodePage(ft.Container):
 
     def _load_products(self, force_reload: bool = False):
         if force_reload or not self._products_cache_loaded:
-            self._products_cache = list(self.db.list_products())
+            self._products_cache = []
             self._products_cache_loaded = True
         return self._products_cache
 
     def refresh(self):
-        self._load_products(force_reload=True)
         self._refresh_shelf_candidates()
         self._refresh_shelf_selection()
 
     def _refresh_shelf_candidates(self):
         query = (self.txt_shelf_search.value or "").strip().lower()
         selected_ids = {item["product_id"] for item in self._shelf_items}
-        matches = []
-        for row in self._load_products():
-            name = (row[1] or "").lower()
-            barcode = (row[2] or "").lower()
-            if query and query not in name and query not in barcode:
-                continue
-            if row[0] in selected_ids:
-                continue
-            matches.append(row)
-        matches = matches[:40]
+        rows = self.db.search_products(search=query, limit=100, offset=0)
+        matches = [row for row in rows if row[0] not in selected_ids][:40]
 
         if not matches:
             self.shelf_candidates.controls = [
@@ -178,6 +170,17 @@ class BarcodePage(ft.Container):
         else:
             self.shelf_candidates.controls = [self._candidate_row(row) for row in matches]
         self._safe_update()
+
+    def _schedule_shelf_search(self, delay: float = 0.25):
+        try:
+            if self._search_timer:
+                self._search_timer.cancel()
+        except Exception:
+            pass
+        import threading
+        self._search_timer = threading.Timer(delay, self._refresh_shelf_candidates)
+        self._search_timer.daemon = True
+        self._search_timer.start()
 
     def _candidate_row(self, row):
         return ft.Container(
@@ -318,17 +321,26 @@ class BarcodePage(ft.Container):
         cards = []
         for item in labels:
             svg = ""
-            if show_barcode and item["barcode"]:
-                try:
-                    svg = ean13_svg(item["barcode"], module_width=2, bar_height=62)
-                except Exception:
-                    svg = ""
+            digits = sanitize_digits(item.get("barcode") or "")
+            if show_barcode and digits:
+                if len(digits) in (12, 13):
+                    try:
+                        svg = ean13_svg(digits, module_width=2, bar_height=62)
+                    except Exception:
+                        if len(digits) >= 12:
+                            try:
+                                svg = ean13_svg(digits[:12], module_width=2, bar_height=62)
+                            except Exception:
+                                svg = ""
+                        else:
+                            svg = ""
             barcode_block = ""
             if show_barcode:
                 if svg:
                     barcode_block = f'<div class="barcode">{svg}</div>'
-                elif item["barcode"]:
-                    barcode_block = f'<div class="plain-barcode">{html.escape(item["barcode"])}</div>'
+                elif item.get("barcode") or digits:
+                    barcode_text = item.get("barcode") or digits
+                    barcode_block = f'<div class="plain-barcode">{html.escape(barcode_text)}</div>'
             price_block = f'<div class="price">{html.escape(item["price_text"])}</div>' if item.get("price_text") else ""
             cards.append(
                 "<div class=\"label\">"
