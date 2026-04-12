@@ -3,8 +3,9 @@ import flet as ft
 
 
 class StockPage(ft.Container):
-    def __init__(self, db):
+    def __init__(self, db, on_stock_changed=None):
         self.db = db
+        self.on_stock_changed = on_stock_changed
         self._all_products = []
 
         # ── Tab 1: Add movement ───────────────────────────────────────────────
@@ -114,7 +115,7 @@ class StockPage(ft.Container):
                             ft.Text("Stok Hareketi Ekle", size=14,
                                     weight=ft.FontWeight.W_600, color=ft.Colors.INDIGO_700),
                             ft.Row([self.dd_product, self.dd_type, self.txt_qty],
-                                   spacing=10, wrap=True),
+                                   spacing=10),
                             ft.Row([self.txt_note,
                                     ft.ElevatedButton("Hareketi Kaydet",
                                                       icon=ft.Icons.SAVE,
@@ -129,12 +130,13 @@ class StockPage(ft.Container):
                         self.lbl_stock_summary,
                         self.dd_stock_filter,
                         self.txt_search,
-                    ], spacing=8, wrap=True,
+                    ], spacing=8,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Container(
                         content=ft.Column([self.products_table], scroll=ft.ScrollMode.AUTO),
-                        bgcolor=ft.Colors.WHITE, border_radius=12, padding=10),
+                        bgcolor=ft.Colors.WHITE, border_radius=12, padding=10, expand=True),
                 ],
+
             ),
         )
         _tab2 = ft.Container(
@@ -152,11 +154,11 @@ class StockPage(ft.Container):
                                                                color=ft.Colors.WHITE),
                                           height=38,
                                           on_click=lambda _: self._refresh_moves()),
-                    ], spacing=8, wrap=True,
+                    ], spacing=8,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Container(
                         content=ft.Column([self.moves_table], scroll=ft.ScrollMode.AUTO),
-                        bgcolor=ft.Colors.WHITE, border_radius=12, padding=10),
+                        bgcolor=ft.Colors.WHITE, border_radius=12, padding=10, expand=True),
                 ],
             ),
         )
@@ -225,6 +227,8 @@ class StockPage(ft.Container):
         self.txt_qty.value = "1"
         self.txt_note.value = ""
         self.refresh()
+        if self.on_stock_changed:
+            self.on_stock_changed()
 
     # ── Product stock table ───────────────────────────────────────────────────
 

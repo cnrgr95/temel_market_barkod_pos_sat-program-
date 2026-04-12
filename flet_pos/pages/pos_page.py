@@ -596,6 +596,31 @@ class POSPage(ft.Container):
         except (ValueError, TypeError):
             return default
 
+    def _merged_group_names(self) -> list[str]:
+        names: list[str] = []
+        try:
+            names.extend(g[1] for g in self.db.list_product_groups() if g and g[1])
+        except Exception:
+            pass
+        try:
+            names.extend(name for name in self.db.list_categories() if name)
+        except Exception:
+            pass
+        return sorted({str(name).strip() for name in names if str(name).strip()})
+
+    def _merged_sub_category_names(self, group_name: str = "") -> list[str]:
+        names: list[str] = []
+        try:
+            cats = self.db.list_product_categories(group_name=group_name) if group_name else self.db.list_product_categories()
+            names.extend(c[2] for c in cats if len(c) > 2 and c[2])
+        except Exception:
+            pass
+        try:
+            names.extend(name for name in self.db.list_sub_categories(group_name) if name)
+        except Exception:
+            pass
+        return sorted({str(name).strip() for name in names if str(name).strip()})
+
     def _clear_search(self):
         self.txt_search.value = ""
         self._grid_filter_value = ""
@@ -904,8 +929,18 @@ class POSPage(ft.Container):
         txt_name = ft.TextField(label="Urun adi *", autofocus=True, expand=True)
         txt_barcode = ft.TextField(label="Barkod", value=barcode, read_only=True, expand=True)
         txt_desc = ft.TextField(label="Aciklama", multiline=True, min_lines=2, max_lines=3, expand=True)
-        txt_category = ft.TextField(label="Kategori", width=170)
-        txt_sub_category = ft.TextField(label="Alt kategori", width=170)
+        dd_category = ft.Dropdown(
+            label="Kategori",
+            width=170,
+            options=[ft.dropdown.Option("", "-- Sec --")] + [
+                ft.dropdown.Option(name, name) for name in self._merged_group_names()
+            ],
+        )
+        dd_sub_category = ft.Dropdown(
+            label="Alt kategori",
+            width=170,
+            options=[ft.dropdown.Option("", "-- Sec --")],
+        )
         txt_buy = ft.TextField(label="Alis fiyati", value="0", width=120)
         txt_price = ft.TextField(label="Satis fiyati", value="0", width=130)
         txt_stock = ft.TextField(label="Stok", value=f"{qty_default:g}", width=110)
@@ -949,6 +984,15 @@ class POSPage(ft.Container):
         lbl_excl = ft.Text("KDV Haric: 0.00", color=ft.Colors.BLUE_GREY_700, size=12)
         lbl_incl = ft.Text("KDV Dahil: 0.00", color=ft.Colors.GREEN_700, size=12, weight=ft.FontWeight.W_600)
 
+        def refresh_sub_categories():
+            current = dd_sub_category.value or ""
+            names = self._merged_sub_category_names(dd_category.value or "")
+            dd_sub_category.options = [ft.dropdown.Option("", "-- Sec --")] + [
+                ft.dropdown.Option(name, name) for name in names
+            ]
+            dd_sub_category.value = current if current in names else ""
+            self._safe_update()
+
         def refresh_price_info():
             price = self._to_float(txt_price.value, 0)
             vat = self._to_float(txt_vat.value, 20)
@@ -986,6 +1030,7 @@ class POSPage(ft.Container):
         txt_price.on_change = lambda _: refresh_price_info()
         txt_vat.on_change = lambda _: refresh_price_info()
         dd_vat_mode.on_select = lambda _: refresh_price_info()
+        dd_category.on_select = lambda _: refresh_sub_categories()
 
         def close_dialog(_e=None):
             self._close_dialog(dlg)
@@ -1024,8 +1069,8 @@ class POSPage(ft.Container):
                 barcode=barcode,
                 name=name,
                 description=(txt_desc.value or "").strip(),
-                category=(txt_category.value or "").strip(),
-                sub_category=(txt_sub_category.value or "").strip(),
+                category=(dd_category.value or "").strip(),
+                sub_category=(dd_sub_category.value or "").strip(),
                 unit=dd_unit.value or "adet",
                 buy_price=buy_price,
                 sell_price_excl_vat=excl,
@@ -1092,8 +1137,7 @@ class POSPage(ft.Container):
                         ft.Row(
                             [
                                 ft.Container(
-                                    width=470,
-                                    expand=True,
+                                    expand=2,
                                     content=ft.Container(
                                         bgcolor=ft.Colors.WHITE,
                                         border_radius=12,
@@ -1103,8 +1147,8 @@ class POSPage(ft.Container):
                                             [
                                                 ft.Text("Temel Bilgiler", size=14, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
                                                 txt_name,
-                                                ft.Row([txt_barcode, dd_unit, sw_scale], wrap=True, spacing=8),
-                                                ft.Row([txt_category, txt_sub_category], wrap=True, spacing=8),
+                                                ft.Row([ft.Container(expand=True, content=txt_barcode), dd_unit, sw_scale], spacing=8),
+                                                ft.Row([ft.Container(expand=True, content=dd_category), ft.Container(expand=True, content=dd_sub_category)], spacing=8),
                                                 txt_desc,
                                             ],
                                             spacing=10,
@@ -1112,7 +1156,7 @@ class POSPage(ft.Container):
                                     ),
                                 ),
                                 ft.Container(
-                                    width=300,
+                                    expand=1,
                                     content=ft.Column(
                                         [
                                             ft.Container(
@@ -1123,15 +1167,15 @@ class POSPage(ft.Container):
                                                 content=ft.Column(
                                                     [
                                                         ft.Text("Fiyat ve Stok", size=14, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
-                                                        ft.Row([txt_buy, txt_price], wrap=True, spacing=8),
-                                                        ft.Row([dd_vat_mode, txt_vat], wrap=True, spacing=8),
+                                                        ft.Row([txt_buy, txt_price], spacing=8),
+                                                        ft.Row([dd_vat_mode, txt_vat], spacing=8),
                                                         ft.Container(
                                                             bgcolor=ft.Colors.INDIGO_50,
                                                             border_radius=8,
                                                             padding=ft.padding.symmetric(horizontal=10, vertical=8),
                                                             content=ft.Column([lbl_excl, lbl_incl], spacing=4),
                                                         ),
-                                                        ft.Row([txt_stock, txt_critical], wrap=True, spacing=8),
+                                                        ft.Row([txt_stock, txt_critical], spacing=8),
                                                     ],
                                                     spacing=10,
                                                 ),
@@ -1162,7 +1206,6 @@ class POSPage(ft.Container):
                                     ),
                                 ),
                             ],
-                            wrap=True,
                             spacing=12,
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         ),
@@ -1185,6 +1228,7 @@ class POSPage(ft.Container):
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
+        refresh_sub_categories()
         refresh_price_info()
         return self._open_dialog(dlg)
 
@@ -1867,7 +1911,7 @@ class POSPage(ft.Container):
                 actions=[
                     ft.TextButton("Kapat", on_click=close),
                     ft.ElevatedButton("Yazdır", icon=ft.Icons.PRINT,
-                                       on_click=lambda _: self._snack("Yazıcı entegrasyonu yakında...")),
+                                       on_click=lambda _: [close(), self._print_receipt_html(total, cart, payment, change)]),
                 ],
             )
             self._open_dialog(dlg)
@@ -1891,3 +1935,38 @@ class POSPage(ft.Container):
             self.quick_side_panel.visible = True
             self.quick_side_panel.width = 280 if width < 1400 else 300
         self._safe_update()
+
+    def _print_receipt_html(self, total: float, items: list[dict], payment_type: str, change: float, customer_id: int | None = None):
+        import html
+        from datetime import datetime
+        import os
+        
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        file_stamp = stamp.replace(":", "").replace(" ", "_").replace("-", "")
+        
+        path = os.path.join(self.media_dir, f"fis_{file_stamp}.html")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("<html><head><meta charset='utf-8'><title>Satis Fisi</title></head>")
+                f.write("<body style='font-family: monospace; padding: 20px; max-width: 300px; margin: auto;'>")
+                f.write("<h2 style='text-align: center; margin-bottom: 5px;'>TEMEL MARKET</h2>")
+                f.write(f"<div style='text-align: center; margin-bottom: 20px;'>Tarih: {stamp}</div>")
+                f.write("<table style='width: 100%; border-collapse: collapse;'>")
+                f.write("<tr><th style='text-align: left; border-bottom: 1px solid #000; padding: 5px 0;'>Urun</th><th style='text-align: right; border-bottom: 1px solid #000; padding: 5px 0;'>Fiyat</th></tr>")
+                for item in items:
+                    name = html.escape(item["product_name"])
+                    f.write(f"<tr><td style='padding: 5px 0;'>{item['quantity']}x {name}</td><td style='text-align: right; padding: 5px 0;'>{item['total']:.2f} TL</td></tr>")
+                f.write("</table>")
+                f.write("<hr style='border: 1px solid #000;'>")
+                f.write(f"<div style='display: flex; justify-content: space-between; font-weight: bold; font-size: 18px;'><span>TOPLAM:</span><span>{total:.2f} TL</span></div>")
+                f.write(f"<div style='display: flex; justify-content: space-between; margin-top: 10px;'><span>Odeme:</span><span>{payment_type}</span></div>")
+                if change > 0:
+                    f.write(f"<div style='display: flex; justify-content: space-between;'><span>Para Ustu:</span><span>{change:.2f} TL</span></div>")
+                f.write("<hr style='border: 1px dashed #000; margin-top: 20px;'>")
+                f.write("<div style='text-align: center; margin-top: 20px; font-style: italic;'>Tesekkur Ederiz!</div>")
+                f.write("<script>window.onload = function() { window.print(); }</script>")
+                f.write("</body></html>")
+            os.startfile(path)
+        except Exception as e:
+            self._snack(f"Yazdirma hatasi: {e}")
+

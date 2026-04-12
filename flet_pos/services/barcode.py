@@ -100,8 +100,7 @@ def generate_ean13(prefix: str = "869") -> str:
     return f"{d12}{checksum(d12)}"
 
 
-def ean13_pattern(barcode: str) -> str:
-    digits = complete_ean13(barcode)
+def ean13_pattern(digits: str) -> str:
     first = digits[0]
     left_digits = digits[1:7]
     right_digits = digits[7:]
@@ -125,7 +124,15 @@ def ean13_svg(
     fg_color: str = "#111827",
     bg_color: str = "#ffffff",
 ) -> str:
-    digits = complete_ean13(barcode)
+    digits = sanitize_digits(barcode)
+    if len(digits) == 12:
+        digits = f"{digits}{checksum(digits)}"
+    elif len(digits) == 13:
+        if not is_valid_ean13(digits):
+            raise ValueError("Gecersiz EAN-13 barkodu")
+    else:
+        raise ValueError("EAN-13 icin 12 veya 13 haneli barkod gereklidir")
+
     bits = ean13_pattern(digits)
     width = len(bits) * module_width
     guard_height = bar_height + 8

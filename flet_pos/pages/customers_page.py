@@ -119,7 +119,6 @@ class CustomersPage(ft.Container):
                         spacing=6,
                     ),
                     self.txt_search,
-                    self.lbl_total_debt,
                     ft.Container(
                         expand=True,
                         bgcolor=ft.Colors.WHITE,
@@ -128,6 +127,7 @@ class CustomersPage(ft.Container):
                         padding=6,
                         content=self.customer_list_col,
                     ),
+                    self.lbl_total_debt,
                 ],
             ),
         )
@@ -266,6 +266,33 @@ class CustomersPage(ft.Container):
         except ValueError:
             return 0.0
 
+    def _customer_option_value(self, row) -> str:
+        return f"{row[0]} - {row[1]}"
+
+    def _parse_customer_id(self, value: str | None) -> int | None:
+        if not value:
+            return None
+        try:
+            return int(str(value).split(" - ")[0])
+        except (ValueError, IndexError):
+            return None
+
+    def _find_customer(self, customer_id: int | None):
+        if customer_id is None:
+            return None
+        return next((r for r in self.db.list_customers() if r[0] == customer_id), None)
+
+    def _set_payment_customer(self, row):
+        if not row:
+            self.dd_customer.value = None
+            self.lbl_customer_balance.value = "Bakiye: -"
+            self.lbl_customer_balance.color = ft.Colors.RED_700
+            return
+        balance = float(row[4] or 0)
+        self.dd_customer.value = self._customer_option_value(row)
+        self.lbl_customer_balance.value = f"Bakiye: {balance:.2f} TL"
+        self.lbl_customer_balance.color = ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
+
     def _safe_refresh_list(self):
         self._render_list()
         self._safe_update()
@@ -344,48 +371,42 @@ class CustomersPage(ft.Container):
 
     # ── Payment ───────────────────────────────────────────────────────────────
 
+    # ── Customer list (left panel) ────────────────────────────────────────────
+
     def _on_customer_select(self, _e):
-        if not self.dd_customer.value:
+        cid = self._parse_customer_id(self.dd_customer.value)
+        if cid is None:
             self.lbl_customer_balance.value = "Bakiye: -"
             self._safe_update()
             return
-        try:
-            cid = int((self.dd_customer.value or "").split(" - ")[0])
-        except (ValueError, IndexError):
-            return
-        row = next((r for r in self.db.list_customers() if r[0] == cid), None)
+        row = self._find_customer(cid)
         if row:
-            balance = float(row[4] or 0)
-            self.lbl_customer_balance.value = f"Bakiye: {balance:.2f} ₺"
-            self.lbl_customer_balance.color = (
-                ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
-            )
+            self._set_payment_customer(row)
             self._safe_update()
 
     def _take_payment(self, _e: ft.ControlEvent):
-        if not self.dd_customer.value:
-            self._snack("Müşteri seçiniz")
+        cid = self._parse_customer_id(self.dd_customer.value)
+        if cid is None:
+            self._snack("Musteri seciniz")
             return
         amount = self._to_float(self.txt_payment.value)
         if amount <= 0:
-            self._snack("Geçerli bir tutar giriniz")
+            self._snack("Gecerli bir tutar giriniz")
             return
-        try:
-            cid = int((self.dd_customer.value or "").split(" - ")[0])
-        except (ValueError, IndexError):
-            return
-        row = next((r for r in self.db.list_customers() if r[0] == cid), None)
+
+        row = self._find_customer(cid)
         if row:
             balance = float(row[4] or 0)
             if amount > balance + 0.01:
-                self._snack(f"Uyarı: Tahsilat borcu aşıyor ({balance:.2f} ₺)")
+                self._snack(f"Uyari: Tahsilat borcu asiyor ({balance:.2f} TL)")
         self.db.add_customer_payment(cid, amount)
         self.txt_payment.value = "0"
-        self.dd_customer.value = None
-        self.lbl_customer_balance.value = "Bakiye: -"
-        self.refresh()
-
-    # ── Customer list (left panel) ────────────────────────────────────────────
+        updated = self._find_customer(cid)
+        self._set_payment_customer(updated)
+        if self._selected_customer is not None and self._selected_customer[0] == cid and updated:
+            self._show_history(updated)
+        else:
+            self.refresh()
 
     def _render_list(self):
         search = (self.txt_search.value or "").strip().lower()
@@ -400,9 +421,12 @@ class CustomersPage(ft.Container):
 
         total_debt = sum(float(r[4] or 0) for r in all_rows if float(r[4] or 0) > 0)
         self.lbl_total_debt.value = f"Toplam Alacak: {total_debt:.2f} ₺"
+        current_customer_value = self.dd_customer.value
+        valid_values = {self._customer_option_value(r) for r in all_rows}
         self.dd_customer.options = [
-            ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in all_rows
+            ft.dropdown.Option(self._customer_option_value(r), f"{r[1]} | {float(r[4] or 0):.2f} TL") for r in all_rows
         ]
+        self.dd_customer.value = current_customer_value if current_customer_value in valid_values else None
 
         self.customer_list_col.controls = []
         for r in filtered:
@@ -489,6 +513,7 @@ class CustomersPage(ft.Container):
             ft.Colors.RED_700 if balance > 0 else ft.Colors.GREEN_700
         )
 
+        self._set_payment_customer(customer_row)
         sales = self.db.list_customer_sales(cid)
         self.history_col.controls = []
 
@@ -516,14 +541,23 @@ class CustomersPage(ft.Container):
         self._safe_update()
 
     def _build_history_row(self, sid, stime, pay, total, disc, is_ret):
-        typ_text = "İADE" if is_ret else "SATIŞ"
-        typ_color = ft.Colors.ORANGE_700 if is_ret else ft.Colors.GREEN_700
+        if is_ret == 2 or pay == "TAHSILAT":
+            typ_text = "TAHSİLAT"
+            typ_color = ft.Colors.BLUE_700
+        elif is_ret:
+            typ_text = "İADE"
+            typ_color = ft.Colors.ORANGE_700
+        else:
+            typ_text = "SATIŞ"
+            typ_color = ft.Colors.GREEN_700
+
         pay_colors = {
             "NAKIT": ft.Colors.GREEN_700,
             "POS": ft.Colors.BLUE_700,
             "VERESIYE": ft.Colors.PURPLE_700,
             "HAVALE": ft.Colors.TEAL_700,
             "NAKIT+POS": ft.Colors.CYAN_700,
+            "TAHSILAT": ft.Colors.INDIGO_700,
         }
         pay_color = pay_colors.get(pay, ft.Colors.BLUE_GREY_600)
 
@@ -695,5 +729,17 @@ class CustomersPage(ft.Container):
     # ── Main refresh ──────────────────────────────────────────────────────────
 
     def refresh(self):
+        selected_id = self._selected_customer[0] if self._selected_customer else None
+        if selected_id:
+            updated = self._find_customer(selected_id)
+            if updated:
+                self._show_history(updated)
+                return
+            self._selected_customer = None
+            self.lbl_history_title.value = "Gecmisi gormek icin soldaki listeden musteri secin"
+            self.lbl_history_title.italic = True
+            self.lbl_history_title.color = ft.Colors.BLUE_GREY_400
+            self.lbl_selected_balance.value = ""
+            self.history_col.controls = []
         self._render_list()
         self._safe_update()

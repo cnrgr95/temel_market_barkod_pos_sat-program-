@@ -25,10 +25,12 @@ class FletMarketApp:
         self.db = DB(os.path.join(self.base_dir, "market.db"))
         self.media_dir = os.path.join(self.base_dir, "product_images")
         os.makedirs(self.media_dir, exist_ok=True)
+        saved_backup_dir = self.db.get_setting("local_backup_dir", "") or ""
+        backup_dir = saved_backup_dir if saved_backup_dir and os.path.isdir(saved_backup_dir) else os.path.join(self.base_dir, "backups")
         self.backup_manager = BackupManager(
             base_dir=self.base_dir,
             db_path=os.path.join(self.base_dir, "market.db"),
-            backup_dir=os.path.join(self.base_dir, "backups"),
+            backup_dir=backup_dir,
             interval_seconds=int(self.db.get_setting("backup_interval_minutes", "120") or "120") * 60,
             google_drive_dir=self.db.get_setting("google_drive_backup_dir", ""),
             target_mode=self.db.get_setting("backup_target_mode", "BOTH"),
@@ -103,7 +105,7 @@ class FletMarketApp:
         products_page = ProductsPage(self.db, self.media_dir, on_products_changed=self._products_changed)
         self.pages["products"] = products_page
         self.pages["barcode_center"] = BarcodePage(self.db, self.base_dir)
-        self.pages["stock"] = StockPage(self.db)
+        self.pages["stock"] = StockPage(self.db, on_stock_changed=self._products_changed)
         self.pages["customers"] = CustomersPage(self.db)
         self.pages["suppliers"] = SuppliersPage(self.db)
         self.pages["reports"] = ReportsPage(self.db)
@@ -315,6 +317,8 @@ class FletMarketApp:
                 page._load_suppliers()
             if hasattr(page, "_refresh_taxonomy_lists"):
                 page._refresh_taxonomy_lists()
+            if hasattr(page, "_load_category_dropdowns"):
+                page._load_category_dropdowns()
             return
         if hasattr(page, "refresh"):
             page.refresh()
@@ -356,15 +360,22 @@ class FletMarketApp:
             self.page.update()
             return
 
-        # POS kısayolları (yalnızca aktif sayfa POS iken)
-        if getattr(self, "_active_nav_key", "") == "pos":
-            pos_page = self.pages.get("pos")
-            if pos_page and hasattr(pos_page, "handle_keyboard_shortcut"):
-                try:
-                    if pos_page.handle_keyboard_shortcut(e):
-                        return
-                except Exception:
-                    pass
+        active_key = getattr(self, "_active_nav_key", "")
+        if active_key:
+            active_page = self.pages.get(active_key)
+            if active_page:
+                if hasattr(active_page, "handle_keyboard_shortcut"):
+                    try:
+                        if active_page.handle_keyboard_shortcut(e):
+                            return
+                    except Exception:
+                        pass
+                if hasattr(active_page, "handle_keyboard_event"):
+                    try:
+                        if active_page.handle_keyboard_event(e):
+                            return
+                    except Exception:
+                        pass
 
     def show(self, key: str):
         self.content_host.content = self.pages[key]
@@ -444,12 +455,21 @@ class FletMarketApp:
         self.page.update()
 
     def _on_window_close(self, _e=None):
-        """Uygulama kapatılırken otomatik yedek al."""
+        """Uygulama kapatılırken otomatik yedek al ve thread kapat."""
         try:
-            if self.backup_manager:
+            if getattr(self, "backup_manager", None):
+                self.backup_manager.stop()
+                if self.backup_manager._thread and self.backup_manager._thread.is_alive():
+                    self.backup_manager._thread.join(timeout=2.0)
                 self.backup_manager.backup_now(prefix="exit")
-        except Exception:
-            pass
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+        finally:
+            try:
+                self.page.window.destroy()
+            except Exception:
+                pass
 
     def _open_change_password_dialog(self):
         if not self.current_user:

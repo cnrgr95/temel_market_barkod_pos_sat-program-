@@ -88,46 +88,55 @@ class SuppliersPage(ft.Container):
                             color=ft.Colors.INDIGO_800),
                 ], spacing=8),
 
-                # Form kartı
-                ft.Card(
-                    elevation=2,
-                    content=ft.Container(
-                        padding=ft.padding.all(14),
-                        content=ft.Column([
-                            self.lbl_form_title,
-                            ft.Row([self.txt_name, self.txt_phone], spacing=8),
-                            ft.Row([self.txt_address], spacing=8),
-                            ft.Row([self.btn_save, self.btn_cancel], spacing=8),
-                        ], spacing=10),
-                    ),
-                ),
-
-                # Borç / Ödeme kartı
-                ft.Card(
-                    elevation=2,
-                    content=ft.Container(
-                        padding=ft.padding.all(14),
-                        content=ft.Column([
-                            ft.Row([
-                                ft.Icon(ft.Icons.CURRENCY_LIRA,
-                                        color=ft.Colors.ORANGE_700, size=18),
-                                ft.Text("Borç / Ödeme İşlemi", size=14,
-                                        weight=ft.FontWeight.W_600,
-                                        color=ft.Colors.ORANGE_800),
-                            ], spacing=6),
-                            ft.Row([self.dd_supplier, self.lbl_balance], spacing=10),
-                            ft.Row([self.dd_move_type, self.txt_amount, self.txt_note], spacing=8),
-                            ft.ElevatedButton(
-                                "İşlemi Uygula",
-                                icon=ft.Icons.CHECK_CIRCLE,
-                                style=ft.ButtonStyle(
-                                    bgcolor=ft.Colors.ORANGE_700,
-                                    color=ft.Colors.WHITE,
-                                ),
-                                on_click=self._apply_move,
+                # Form + Borç/Ödeme yan yana
+                ft.Row(
+                    [
+                        # Form kartı
+                        ft.Card(
+                            elevation=2,
+                            expand=True,
+                            content=ft.Container(
+                                padding=ft.padding.all(14),
+                                content=ft.Column([
+                                    self.lbl_form_title,
+                                    ft.Row([ft.Container(expand=True, content=self.txt_name), self.txt_phone], spacing=8),
+                                    self.txt_address,
+                                    ft.Row([self.btn_save, self.btn_cancel], spacing=8),
+                                ], spacing=10),
                             ),
-                        ], spacing=10),
-                    ),
+                        ),
+
+                        # Borç / Ödeme kartı
+                        ft.Card(
+                            elevation=2,
+                            expand=True,
+                            content=ft.Container(
+                                padding=ft.padding.all(14),
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Icon(ft.Icons.CURRENCY_LIRA,
+                                                color=ft.Colors.ORANGE_700, size=18),
+                                        ft.Text("Borç / Ödeme İşlemi", size=14,
+                                                weight=ft.FontWeight.W_600,
+                                                color=ft.Colors.ORANGE_800),
+                                    ], spacing=6),
+                                    ft.Row([ft.Container(expand=True, content=self.dd_supplier), self.lbl_balance], spacing=10),
+                                    ft.Row([self.dd_move_type, self.txt_amount, ft.Container(expand=True, content=self.txt_note)], spacing=8),
+                                    ft.ElevatedButton(
+                                        "İşlemi Uygula",
+                                        icon=ft.Icons.CHECK_CIRCLE,
+                                        style=ft.ButtonStyle(
+                                            bgcolor=ft.Colors.ORANGE_700,
+                                            color=ft.Colors.WHITE,
+                                        ),
+                                        on_click=self._apply_move,
+                                    ),
+                                ], spacing=10),
+                            ),
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
 
                 # Liste kartı

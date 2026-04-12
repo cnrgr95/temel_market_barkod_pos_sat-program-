@@ -918,6 +918,49 @@ class DB:
 
     # ── Müşteriler ────────────────────────────────────────────────────────────
 
+    def set_product_prices(self, updates: list[tuple[int, float]]) -> int:
+        """Set individual product sale prices using KDV-included values."""
+        cleaned: list[tuple[int, float]] = []
+        for product_id, new_price in updates or []:
+            try:
+                pid = int(product_id)
+                price = max(0.0, float(new_price or 0))
+            except (TypeError, ValueError):
+                continue
+            cleaned.append((pid, price))
+
+        if not cleaned:
+            return 0
+
+        with self.conn() as conn:
+            cur = conn.cursor()
+            updated = 0
+            for product_id, new_incl in cleaned:
+                row = cur.execute(
+                    """
+                    SELECT vat_rate
+                    FROM products
+                    WHERE id=? AND COALESCE(is_active,1)=1
+                    """,
+                    (product_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                rate = float(row[0] or 0)
+                new_excl = new_incl / (1 + rate / 100.0) if rate > -100 else new_incl
+                cur.execute(
+                    """
+                    UPDATE products
+                    SET sell_price_incl_vat=?, sell_price_excl_vat=?
+                    WHERE id=?
+                    """,
+                    (new_incl, new_excl, product_id),
+                )
+                if cur.rowcount:
+                    updated += 1
+            conn.commit()
+        return updated
+
     def list_customers(self):
         with self.conn() as conn:
             return conn.execute(
@@ -990,7 +1033,24 @@ class DB:
     def add_customer_payment(self, customer_id: int, amount: float) -> None:
         with self.conn() as conn:
             conn.execute("UPDATE customers SET balance=balance-? WHERE id=?", (amount, customer_id))
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO sales (sale_time, subtotal, discount, total, payment_type, cash_amount, card_amount, transfer_amount, customer_id, is_return)
+                VALUES (?, 0, 0, ?, 'TAHSILAT', ?, 0, 0, ?, 2)
+                """,
+                (_now(), amount, amount, customer_id)
+            )
+            sale_id = cur.lastrowid
+            cur.execute(
+                """
+                INSERT INTO cash_moves (move_time, move_type, amount, sale_id, expense_category, note) 
+                VALUES (?, 'IN', ?, ?, 'Cari Tahsilat', 'Cari Tahsilat')
+                """,
+                (_now(), amount, sale_id)
+            )
             conn.commit()
+
 
     # ── Tedarikçiler ──────────────────────────────────────────────────────────
 

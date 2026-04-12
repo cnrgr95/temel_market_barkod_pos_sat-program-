@@ -152,7 +152,7 @@ class CashPage(ft.Container):
                                     self.dd_type,
                                     self.dd_expense_category,
                                     self.txt_amount,
-                                    self.txt_note,
+                                    ft.Container(expand=True, content=self.txt_note),
                                     ft.ElevatedButton(
                                         "Kaydet",
                                         icon=ft.Icons.SAVE,
@@ -160,7 +160,6 @@ class CashPage(ft.Container):
                                     ),
                                 ],
                                 spacing=10,
-                                wrap=True,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
                         ],
@@ -191,27 +190,36 @@ class CashPage(ft.Container):
                         ),
                     ],
                     spacing=8,
-                    wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                ft.Container(
-                    content=ft.Column([self.table], scroll=ft.ScrollMode.AUTO),
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=12,
-                    padding=10,
-                ),
-                # Expense summary
-                ft.Text(
-                    "Gider Özeti (Seçili Dönem)",
-                    size=14,
-                    weight=ft.FontWeight.W_600,
-                    color=ft.Colors.RED_700,
-                ),
-                ft.Container(
-                    content=ft.Column([self.expense_table], scroll=ft.ScrollMode.AUTO),
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=12,
-                    padding=10,
+                ft.Row(
+                    [
+                        ft.Container(
+                            expand=2,
+                            content=ft.Column([self.table], scroll=ft.ScrollMode.AUTO),
+                            bgcolor=ft.Colors.WHITE,
+                            border_radius=12,
+                            padding=10,
+                        ),
+                        ft.Container(
+                            expand=1,
+                            content=ft.Column([
+                                ft.Text(
+                                    "Gider Özeti (Seçili Dönem)",
+                                    size=13,
+                                    weight=ft.FontWeight.W_600,
+                                    color=ft.Colors.RED_700,
+                                ),
+                                ft.Column([self.expense_table], scroll=ft.ScrollMode.AUTO),
+                            ], spacing=8),
+                            bgcolor=ft.Colors.WHITE,
+                            border_radius=12,
+                            padding=10,
+                        ),
+                    ],
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                    expand=True,
                 ),
             ],
         )
@@ -381,8 +389,12 @@ class CashPage(ft.Container):
     # ── Main refresh ──────────────────────────────────────────────────────────
 
     def refresh(self):
-        balance = self.db.get_cash_balance()
+        try:
+            balance = self.db.get_cash_balance()
+        except Exception:
+            balance = 0.0
         color = ft.Colors.GREEN_700 if balance >= 0 else ft.Colors.RED_700
         self.lbl_balance.value = f"Kasa Bakiyesi: {balance:,.2f} ₺"
         self.lbl_balance.color = color
         self._refresh_moves()
+        self._safe_update()

@@ -11,10 +11,11 @@ class BackupPage(ft.Container):
     def __init__(self, base_dir: str, backup_manager=None, db=None):
         self.base_dir = base_dir
         self.db_path = os.path.join(base_dir, "market.db")
-        self.backup_dir = os.path.join(base_dir, "backups")
         self.backup_manager = backup_manager
+        self.backup_dir = backup_manager.backup_dir if backup_manager else os.path.join(base_dir, "backups")
         self.db = db
         self._stop_live = threading.Event()
+        self._live_thread: threading.Thread | None = None
         os.makedirs(self.backup_dir, exist_ok=True)
 
         self.lbl_db_size = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_600)
@@ -89,15 +90,23 @@ class BackupPage(ft.Container):
                         ft.Container(expand=True, content=self._files_card()),
                         ft.Container(expand=True, content=self._logs_card()),
                     ],
-                    wrap=True,
                     spacing=12,
                     vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
             ],
         )
         super().__init__(expand=True, padding=12, content=content)
+        # Live refresh is started in did_mount so self.page is available
 
+    def did_mount(self):
+        """Called by Flet when this control is added to the page."""
+        self._stop_live.clear()
+        self.refresh()
         self._start_live_refresh()
+
+    def will_unmount(self):
+        """Called by Flet when this control is removed from the page."""
+        self._stop_live.set()
 
     def _summary_card(self):
         return ft.Container(
@@ -132,7 +141,6 @@ class BackupPage(ft.Container):
                         expand=True,
                     ),
                 ],
-                wrap=True,
                 spacing=16,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
@@ -163,7 +171,7 @@ class BackupPage(ft.Container):
                     ),
                     ft.Row(
                         [
-                            self.txt_local_dir,
+                            ft.Container(expand=True, content=self.txt_local_dir),
                             ft.OutlinedButton(
                                 "Klasör Seç",
                                 icon=ft.Icons.FOLDER_OPEN,
@@ -175,7 +183,6 @@ class BackupPage(ft.Container):
                                 on_click=self._reset_local_dir,
                             ),
                         ],
-                        wrap=True,
                         spacing=10,
                     ),
                     ft.Row(
@@ -184,7 +191,6 @@ class BackupPage(ft.Container):
                             ft.OutlinedButton("Drive Yolunu Kaydet", icon=ft.Icons.CLOUD_DONE, on_click=self._save_drive_dir),
                             ft.OutlinedButton("Otomatik Bul", icon=ft.Icons.SEARCH, on_click=self._detect_drive_dir),
                         ],
-                        wrap=True,
                         spacing=10,
                     ),
                 ],
@@ -223,14 +229,47 @@ class BackupPage(ft.Container):
         )
 
     def _start_live_refresh(self):
+        """Two-tier refresh:
+        - Every 1 second: update only the countdown timer label.
+        - Every 30 seconds: full page refresh (file list, logs, etc.).
+        """
+        if self._live_thread and self._live_thread.is_alive():
+            return
+
         def _worker():
+            tick = 0
             while not self._stop_live.wait(1.0):
                 try:
-                    self.refresh()
+                    self._tick_countdown()
+                    tick += 1
+                    if tick >= 30:
+                        self.refresh()
+                        tick = 0
                 except Exception:
                     pass
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._live_thread = threading.Thread(target=_worker, daemon=True)
+        self._live_thread.start()
+
+    def _tick_countdown(self):
+        """Update only the countdown label - lightweight, runs every second."""
+        if not self.backup_manager or self.page is None:
+            return
+        try:
+            total_sec = self.backup_manager.seconds_until_next_backup()
+            h = total_sec // 3600
+            m = (total_sec % 3600) // 60
+            s = total_sec % 60
+            if h > 0:
+                self.lbl_countdown.value = f"{h:02d}:{m:02d}:{s:02d}"
+            else:
+                self.lbl_countdown.value = f"{m:02d}:{s:02d}"
+            try:
+                self.lbl_countdown.update()
+            except Exception:
+                self._safe_update()
+        except Exception:
+            pass
 
     def _safe_update(self):
         if self.page is None:
@@ -275,6 +314,7 @@ class BackupPage(ft.Container):
 
         target = self.dd_target_mode.value or "BOTH"
         if self.backup_manager:
+            self.backup_manager.set_backup_dir(self.backup_dir)
             self.backup_manager.set_interval_minutes(minutes)
             self.backup_manager.set_target_mode(target)
         if self.db:
@@ -310,6 +350,8 @@ class BackupPage(ft.Container):
                     self.backup_dir = chosen
                     self.txt_local_dir.value = chosen
                     os.makedirs(chosen, exist_ok=True)
+                    if self.backup_manager:
+                        self.backup_manager.set_backup_dir(chosen)
                     if self.db:
                         self.db.set_setting("local_backup_dir", chosen)
                     self.refresh()
@@ -323,6 +365,8 @@ class BackupPage(ft.Container):
         self.backup_dir = os.path.join(self.base_dir, "backups")
         self.txt_local_dir.value = ""
         os.makedirs(self.backup_dir, exist_ok=True)
+        if self.backup_manager:
+            self.backup_manager.set_backup_dir(self.backup_dir)
         if self.db:
             self.db.set_setting("local_backup_dir", "")
         self.refresh()
@@ -454,25 +498,35 @@ class BackupPage(ft.Container):
 
     def _build_file_rows(self):
         files = []
-        if os.path.isdir(self.backup_dir):
-            for name in os.listdir(self.backup_dir):
-                path = os.path.join(self.backup_dir, name)
-                if os.path.isfile(path) and name.endswith(".db"):
-                    modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
-                    files.append((name, modified, self._fmt_size(path), path))
+        directories_to_scan = [("Local", self.backup_dir)]
+        
+        if self.backup_manager:
+            drive_dir = self.backup_manager.google_backup_dir()
+            if drive_dir and os.path.isdir(drive_dir):
+                directories_to_scan.append(("Drive", drive_dir))
+
+        for location_name, directory in directories_to_scan:
+            if os.path.isdir(directory):
+                for name in os.listdir(directory):
+                    path = os.path.join(directory, name)
+                    if os.path.isfile(path) and (name.endswith(".db") or name.endswith(".zip")):
+                        modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+                        files.append((name, modified, self._fmt_size(path), path, location_name))
         files.sort(key=lambda item: item[1], reverse=True)
 
         if not files:
             self.files_list.controls = [
                 ft.Container(
                     padding=ft.padding.symmetric(vertical=12),
-                    content=ft.Text("Henuz yerel yedek dosyasi yok", color=ft.Colors.BLUE_GREY_400),
+                    content=ft.Text("Henuz yedek dosyasi yok", color=ft.Colors.BLUE_GREY_400),
                 )
             ]
             return
 
         rows = []
-        for name, modified, size_text, path in files:
+        for name, modified, size_text, path, loc_name in files:
+            icon = ft.Icons.FOLDER_ZIP if name.endswith(".zip") else ft.Icons.DATA_OBJECT
+            loc_color = ft.Colors.GREEN_700 if loc_name == "Drive" else ft.Colors.BLUE_GREY_600
             rows.append(
                 ft.Container(
                     bgcolor=ft.Colors.GREY_50,
@@ -483,15 +537,22 @@ class BackupPage(ft.Container):
                         [
                             ft.Row(
                                 [
+                                    ft.Icon(icon, size=16, color=ft.Colors.INDIGO_400),
                                     ft.Text(name, weight=ft.FontWeight.W_600, expand=True),
+                                    ft.Text(loc_name, size=11, color=loc_color, weight=ft.FontWeight.BOLD),
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Row(
+                                [
+                                    ft.Text(modified, size=11, color=ft.Colors.BLUE_GREY_500),
                                     ft.Text(size_text, size=11, color=ft.Colors.BLUE_GREY_500),
                                 ],
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             ),
-                            ft.Text(modified, size=11, color=ft.Colors.BLUE_GREY_500),
                             ft.Row(
                                 [
-                                    ft.TextButton("Geri Yukle", icon=ft.Icons.RESTORE, on_click=lambda _, p=path, n=name: self._confirm_restore(p, n)),
+                                    ft.TextButton("Geri Yukle", icon=ft.Icons.RESTORE, disabled=name.endswith(".zip"), on_click=lambda _, p=path, n=name: self._confirm_restore(p, n)),
                                     ft.TextButton("Sil", icon=ft.Icons.DELETE, style=ft.ButtonStyle(color=ft.Colors.RED_600), on_click=lambda _, p=path, n=name: self._confirm_delete_backup(p, n)),
                                 ],
                                 spacing=4,
@@ -521,7 +582,13 @@ class BackupPage(ft.Container):
                 "WARNING": ft.Colors.ORANGE_700,
                 "ERROR": ft.Colors.RED_700,
             }.get(status, ft.Colors.BLUE_GREY_700)
-            path_text = drive_path or local_path or "-"
+            path_controls = []
+            if local_path:
+                path_controls.append(ft.Text(f"Local: {local_path}", size=11, color=ft.Colors.BLUE_GREY_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+            if drive_path:
+                path_controls.append(ft.Text(f"Drive: {drive_path}", size=11, color=ft.Colors.GREEN_700, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+            if not path_controls:
+                path_controls.append(ft.Text("-", size=11, color=ft.Colors.BLUE_GREY_600))
             rows.append(
                 ft.Container(
                     bgcolor=ft.Colors.GREY_50,
@@ -538,7 +605,7 @@ class BackupPage(ft.Container):
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                             ),
                             ft.Text(kind or "-", size=12, weight=ft.FontWeight.W_600),
-                            ft.Text(path_text, size=11, color=ft.Colors.BLUE_GREY_600, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                            *path_controls,
                             ft.Text(message or "Basarili", size=11, color=color if message else ft.Colors.GREEN_700),
                         ],
                         spacing=6,
@@ -553,14 +620,20 @@ class BackupPage(ft.Container):
         else:
             self.lbl_db_size.value = "Veritabanı bulunamadı"
 
-        # Restore saved local backup dir
+        # Keep the page and backup service on the same local backup directory.
+        default_local = os.path.join(self.base_dir, "backups")
         if self.db:
             saved_local = self.db.get_setting("local_backup_dir", "") or ""
-            if saved_local and os.path.isdir(saved_local):
-                self.backup_dir = saved_local
-                self.txt_local_dir.value = saved_local
-            else:
-                self.txt_local_dir.value = ""
+            chosen_local = saved_local if saved_local and os.path.isdir(saved_local) else default_local
+        else:
+            chosen_local = self.backup_dir or default_local
+        if self.backup_manager:
+            if os.path.abspath(self.backup_manager.backup_dir) != os.path.abspath(chosen_local):
+                self.backup_manager.set_backup_dir(chosen_local)
+            self.backup_dir = self.backup_manager.backup_dir
+        else:
+            self.backup_dir = chosen_local
+        self.txt_local_dir.value = "" if os.path.abspath(self.backup_dir) == os.path.abspath(default_local) else self.backup_dir
 
         if self.backup_manager:
             minutes = int(self.backup_manager.interval_seconds / 60)

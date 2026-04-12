@@ -57,7 +57,6 @@ class BarcodePage(ft.Container):
                                     self.chk_show_price,
                                     self.chk_show_barcode,
                                 ],
-                                wrap=True,
                                 spacing=10,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
@@ -200,7 +199,6 @@ class BarcodePage(ft.Container):
                     ft.OutlinedButton("Ekle", icon=ft.Icons.ADD, on_click=lambda _, r=row: self._add_shelf_product(r)),
                 ],
                 spacing=10,
-                wrap=True,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
@@ -283,7 +281,6 @@ class BarcodePage(ft.Container):
                         ),
                     ],
                     spacing=10,
-                    wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
             )
@@ -371,44 +368,76 @@ class BarcodePage(ft.Container):
     }}
     .grid {{
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(3, 60mm);
+      grid-auto-rows: 50mm;
+      gap: 4mm;
+      align-items: start;
     }}
     .label {{
       background: #ffffff;
       border: 1px solid #cbd5e1;
-      border-radius: 8px;
-      padding: 10px;
-      min-height: 170px;
+      border-radius: 6px;
+      padding: 3mm;
+      width: 60mm;
+      height: 50mm;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
       box-sizing: border-box;
+      overflow: hidden;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }}
     .name {{
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
       line-height: 1.25;
-      min-height: 40px;
+      min-height: 9mm;
+      max-height: 19mm;
+      overflow: hidden;
     }}
     .price {{
-      font-size: 26px;
+      font-size: 24px;
       font-weight: 800;
       color: #047857;
-      margin: 8px 0;
+      margin: 1mm 0 2mm;
+      line-height: 1;
     }}
     .barcode {{
-      margin-top: 8px;
+      margin-top: 1mm;
+      text-align: center;
+      line-height: 0;
+    }}
+    .barcode svg {{
+      width: 100%;
+      max-width: 52mm;
+      height: 24mm;
+      display: block;
+      margin: 0 auto;
     }}
     .plain-barcode {{
-      margin-top: 10px;
-      padding: 12px 8px;
+      margin-top: 2mm;
+      padding: 3mm 2mm;
       border: 1px dashed #94a3b8;
       border-radius: 6px;
       text-align: center;
       font-size: 18px;
       font-weight: 700;
       letter-spacing: 1px;
+    }}
+    @media print {{
+      body {{
+        background: #ffffff;
+      }}
+      .header {{
+        display: none;
+      }}
+      .grid {{
+        gap: 3mm;
+      }}
+      .label {{
+        box-shadow: none;
+      }}
     }}
   </style>
 </head>

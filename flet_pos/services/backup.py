@@ -29,7 +29,7 @@ class BackupManager:
     ) -> None:
         self.base_dir = base_dir
         self.db_path = db_path
-        self.backup_dir = backup_dir
+        self.backup_dir = backup_dir or os.path.join(base_dir, "backups")
         self.interval_seconds = max(300, int(interval_seconds or 7200))
         self.google_drive_dir = google_drive_dir or self.detect_google_drive_dir()
         self.target_mode = self._normalize_target_mode(target_mode)
@@ -56,6 +56,13 @@ class BackupManager:
         with self._lock:
             self.target_mode = self._normalize_target_mode(mode)
 
+    def set_backup_dir(self, backup_dir: str) -> None:
+        path = (backup_dir or "").strip() or os.path.join(self.base_dir, "backups")
+        os.makedirs(path, exist_ok=True)
+        with self._lock:
+            self.backup_dir = path
+            self.log_path = os.path.join(path, "backup_log.csv")
+
     def seconds_until_next_backup(self) -> int:
         with self._lock:
             remaining = int(round(self._next_backup_at - time.time()))
@@ -68,6 +75,14 @@ class BackupManager:
         if hours:
             return f"{hours:02d}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
+
+    @property
+    def next_backup_time(self):
+        """Return next backup time as a datetime object."""
+        from datetime import datetime
+        with self._lock:
+            ts = self._next_backup_at
+        return datetime.fromtimestamp(ts)
 
     def detect_google_drive_dir(self) -> str:
         env_dir = os.environ.get("GOOGLE_DRIVE_BACKUP_DIR", "").strip()

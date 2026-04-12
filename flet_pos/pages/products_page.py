@@ -55,8 +55,15 @@ class ProductsPage(ft.Container):
         self.txt_name = ft.TextField(label="Urun Adi *", expand=True)
         self.txt_barcode = ft.TextField(label="Barkod *", width=220)
         self.txt_desc = ft.TextField(label="Aciklama", multiline=True, min_lines=2, max_lines=4)
-        self.txt_category = ft.TextField(label="Kategori / Grup", width=180)
-        self.txt_sub_category = ft.TextField(label="Alt Kategori", width=180)
+        self.dd_category = ft.Dropdown(
+            label="Kategori / Grup", width=200,
+            options=[ft.dropdown.Option("", "— Sec —")],
+            on_select=lambda _: self._on_category_changed(),
+        )
+        self.dd_sub_category = ft.Dropdown(
+            label="Alt Kategori", width=200,
+            options=[ft.dropdown.Option("", "— Sec —")],
+        )
         self.dd_unit = ft.Dropdown(
             label="Birim",
             options=[
@@ -129,7 +136,10 @@ class ProductsPage(ft.Container):
             ],
             on_select=lambda _: self._on_bulk_scope_changed(),
         )
-        self.dd_bulk_group = ft.Dropdown(label="Grup", width=200, options=[], visible=False)
+        self.dd_bulk_group = ft.Dropdown(
+            label="Grup", width=200, options=[], visible=False,
+            on_select=lambda _: self._on_bulk_group_changed()
+        )
         self.dd_bulk_category = ft.Dropdown(label="Alt Kategori", width=200, options=[], visible=False)
         self.dd_bulk_type = ft.Dropdown(
             label="Degisim Tipi",
@@ -151,6 +161,8 @@ class ProductsPage(ft.Container):
         )
         self.txt_bulk_value = ft.TextField(label="Deger", value="0", width=130)
         self.lbl_bulk_result = ft.Text("", size=13, color=ft.Colors.GREEN_700)
+        self.lbl_bulk_preview_status = ft.Text("", size=12, color=ft.Colors.BLUE_GREY_600)
+        self.bulk_preview_table_col = ft.Column(spacing=4)
 
         # --- Kategori / Grup yonetimi ---
         self.txt_group_name = ft.TextField(label="Grup Adi *", expand=True)
@@ -211,6 +223,9 @@ class ProductsPage(ft.Container):
 
         super().__init__(expand=True, content=self._tabs)
 
+        self._scanner_buffer = ""
+        self._last_key_time = 0
+
         self._refresh_price_labels()
         # data loading handled by app.py _refresh_page_data on first navigation
 
@@ -225,7 +240,7 @@ class ProductsPage(ft.Container):
                 spacing=12,
                 controls=[
                     ft.Text("Hizli Satis Listesi", size=17, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
-                    ft.Row([ft.Container(expand=True, content=self.dd_quick_add), self.btn_quick_add], wrap=True, spacing=10),
+                    ft.Row([ft.Container(expand=True, content=self.dd_quick_add), self.btn_quick_add], spacing=10),
                     self.lbl_quick_summary,
                     self.quick_selection_list,
                 ],
@@ -242,9 +257,9 @@ class ProductsPage(ft.Container):
                 controls=[
                     ft.Row([self.lbl_form_title, self.btn_cancel_edit], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Row([ft.Container(expand=True, content=self.txt_name),
-                            ft.Container(width=230, content=self.txt_barcode)], wrap=True, spacing=10),
+                            ft.Container(width=230, content=self.txt_barcode)], spacing=10),
                     self.txt_desc,
-                    ft.Row([self.txt_category, self.txt_sub_category, self.dd_unit, self.sw_scale], wrap=True, spacing=10),
+                    ft.Row([self.dd_category, self.dd_sub_category, self.dd_unit, self.sw_scale], spacing=10),
                     ft.Row([self.dd_supplier], wrap=True),
                     ft.Row([self.txt_buy, self.txt_sell_base, self.dd_vat_mode, self.txt_vat,
                             self.txt_stock, self.txt_critical], wrap=True, spacing=10),
@@ -283,11 +298,47 @@ class ProductsPage(ft.Container):
                         ft.Text("Urun Listesi", size=17, weight=ft.FontWeight.W_700, color=ft.Colors.INDIGO_800),
                         self.txt_search,
                         self.dd_filter_group,
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, spacing=8),
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=8),
                     self.products_list,
                 ],
             ),
         )
+
+    def handle_keyboard_event(self, e: ft.KeyboardEvent) -> bool:
+        """Global barkod okuyucu dinleyicisi (sayfa aktifken tum tuslari yakalar)."""
+        import time
+        now = time.time()
+        # 100ms'den uzun sürdüyse beyni sıfırla (tarayıcılar genelde 10-30ms arası gönderir)
+        if now - self._last_key_time > 0.1:
+            self._scanner_buffer = ""
+        
+        self._last_key_time = now
+        
+        # Enter okunduysa ve bufferda en az 3 karakter varsa barkod kabul et
+        if e.key == "Enter":
+            if len(self._scanner_buffer) >= 3:
+                self.txt_barcode.value = self._scanner_buffer
+                self._scanner_buffer = ""
+                self._safe_update()
+                # Sekmeyi Ekle formuna alabiliriz
+                if self._tabs.selected_index != 0:
+                    self._tabs.selected_index = 0
+                    self._safe_update()
+                return True
+            else:
+                self._scanner_buffer = ""
+                return False
+                
+        # Sadece rakamları / harfleri tampona al (barkodlar için)
+        if len(e.key) == 1 and e.key.isalnum():
+            self._scanner_buffer += e.key
+            return True
+        elif len(e.key) == 1:
+            self._scanner_buffer = "" # iptal
+            
+        return False
+
+
 
     def _build_bulk_price_card(self):
         return ft.Container(
@@ -311,17 +362,30 @@ class ProductsPage(ft.Container):
                             ),
                         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
                     ),
-                    ft.Row([self.dd_bulk_scope, self.dd_bulk_group, self.dd_bulk_category], wrap=True, spacing=12),
-                    ft.Row([self.dd_bulk_type, self.dd_bulk_direction, self.txt_bulk_value], wrap=True, spacing=12),
+                    ft.Row([self.dd_bulk_scope, self.dd_bulk_group, self.dd_bulk_category], spacing=12),
+                    ft.Row([self.dd_bulk_type, self.dd_bulk_direction, self.txt_bulk_value], spacing=12),
                     ft.Row([
+                        ft.OutlinedButton(
+                            "Onizle",
+                            icon=ft.Icons.PREVIEW,
+                            style=ft.ButtonStyle(color=ft.Colors.INDIGO_700),
+                            on_click=self._preview_bulk_price,
+                        ),
                         ft.ElevatedButton(
                             "Fiyatlari Guncelle",
                             icon=ft.Icons.PRICE_CHANGE,
                             style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE_700, color=ft.Colors.WHITE),
                             on_click=self._do_bulk_price_change,
                         ),
-                    ]),
+                    ], spacing=10),
                     self.lbl_bulk_result,
+                    self.lbl_bulk_preview_status,
+                    ft.Container(
+                        content=self.bulk_preview_table_col,
+                        bgcolor=ft.Colors.GREY_50,
+                        border_radius=10,
+                        padding=10,
+                    ),
                 ],
             ),
         )
@@ -344,7 +408,7 @@ class ProductsPage(ft.Container):
                                 on_click=self._save_group,
                             ),
                             ft.OutlinedButton("Yeni", icon=ft.Icons.ADD, on_click=lambda _: self._reset_group_form()),
-                        ], wrap=True, spacing=8),
+                        ], spacing=8),
                         self.groups_list,
                     ]),
                 ),
@@ -363,7 +427,7 @@ class ProductsPage(ft.Container):
                                 on_click=self._save_category,
                             ),
                             ft.OutlinedButton("Yeni", icon=ft.Icons.ADD, on_click=lambda _: self._reset_category_form()),
-                        ], wrap=True, spacing=8),
+                        ], spacing=8),
                         self.cats_list,
                     ]),
                 ),
@@ -417,6 +481,56 @@ class ProductsPage(ft.Container):
             ft.dropdown.Option(str(s[0]), s[1]) for s in suppliers
         ]
         self._safe_update()
+
+    def _merged_group_names(self) -> list[str]:
+        names: list[str] = []
+        try:
+            names.extend(g[1] for g in self.db.list_product_groups() if g and g[1])
+        except Exception:
+            pass
+        try:
+            names.extend(name for name in self.db.list_categories() if name)
+        except Exception:
+            pass
+        return sorted({str(name).strip() for name in names if str(name).strip()})
+
+    def _merged_sub_category_names(self, group_name: str = "") -> list[str]:
+        names: list[str] = []
+        try:
+            cats = self.db.list_product_categories(group_name=group_name) if group_name else self.db.list_product_categories()
+            names.extend(c[2] for c in cats if len(c) > 2 and c[2])
+        except Exception:
+            pass
+        try:
+            names.extend(name for name in self.db.list_sub_categories(group_name) if name)
+        except Exception:
+            pass
+        return sorted({str(name).strip() for name in names if str(name).strip()})
+
+    def _load_category_dropdowns(self):
+        """Populate Category and Sub-Category dropdowns from DB taxonomy."""
+        current_group = self.dd_category.value or ""
+        groups = self._merged_group_names()
+        self.dd_category.options = [ft.dropdown.Option("", "-- Sec --")] + [
+            ft.dropdown.Option(name, name) for name in groups
+        ]
+        self.dd_category.value = current_group if current_group in groups else ""
+        self._on_category_changed()
+        self._safe_update()
+
+    def _on_category_changed(self, group_override: str | None = None):
+        """When category changes, reload sub-category options from DB."""
+        group = group_override if group_override is not None else (self.dd_category.value or "")
+        current_sub = self.dd_sub_category.value or ""
+        cats = self._merged_sub_category_names(group)
+        self.dd_sub_category.options = [ft.dropdown.Option("", "-- Sec --")] + [
+            ft.dropdown.Option(name, name) for name in cats
+        ]
+        if group_override is None:
+            self.dd_sub_category.value = current_sub if current_sub in cats else ""
+        self._safe_update()
+
+
 
     def _pick_image(self, _e):
         def _open_dialog():
@@ -604,8 +718,10 @@ class ProductsPage(ft.Container):
         self.txt_barcode.value = r[2] or ""
         self.txt_barcode.read_only = True
         self.txt_desc.value = r[3] or ""
-        self.txt_category.value = r[4] or ""
-        self.txt_sub_category.value = r[5] or ""
+        self.dd_category.value = r[4] or ""
+        # Populate sub-cats for this group then set value
+        self._on_category_changed(group_override=r[4] or "")
+        self.dd_sub_category.value = r[5] or ""
         self.dd_unit.value = r[6] or "adet"
         self.txt_buy.value = str(r[7] or 0)
         self.dd_vat_mode.value = r[11] or "INCL"
@@ -634,8 +750,8 @@ class ProductsPage(ft.Container):
         self.txt_barcode.value = ""
         self.txt_barcode.read_only = False
         self.txt_desc.value = ""
-        self.txt_category.value = ""
-        self.txt_sub_category.value = ""
+        self.dd_category.value = ""
+        self.dd_sub_category.value = ""
         self.dd_unit.value = "adet"
         self.txt_buy.value = "0"
         self.txt_sell_base.value = "0"
@@ -767,7 +883,7 @@ class ProductsPage(ft.Container):
                 width=560,
                 content=ft.Column([
                     txt_name,
-                    ft.Row([txt_buy, txt_sell, dd_vat_mode, txt_vat], wrap=True, spacing=8),
+                    ft.Row([txt_buy, txt_sell, dd_vat_mode, txt_vat], spacing=8),
                     lbl_prices,
                     ft.Row([txt_stock, txt_critical], spacing=8),
                 ], spacing=10, tight=True),
@@ -812,8 +928,8 @@ class ProductsPage(ft.Container):
             barcode=self.txt_barcode.value.strip(),
             name=self.txt_name.value.strip(),
             description=(self.txt_desc.value or "").strip(),
-            category=(self.txt_category.value or "").strip(),
-            sub_category=(self.txt_sub_category.value or "").strip(),
+            category=(self.dd_category.value or "").strip(),
+            sub_category=(self.dd_sub_category.value or "").strip(),
             unit=self.dd_unit.value or "adet",
             buy_price=self._to_float(self.txt_buy.value, 0),
             sell_price_excl_vat=excl,
@@ -839,13 +955,40 @@ class ProductsPage(ft.Container):
         self.dd_bulk_group.visible = scope in ("GROUP", "CATEGORY")
         self.dd_bulk_category.visible = scope == "CATEGORY"
         if scope in ("GROUP", "CATEGORY"):
-            groups = self.db.list_product_groups()
+            groups = self._merged_group_names()
             self.dd_bulk_group.options = [ft.dropdown.Option("", "-- Hepsi --")] + [
-                ft.dropdown.Option(g[1], g[1]) for g in groups
+                ft.dropdown.Option(name, name) for name in groups
             ]
+            self._on_bulk_group_changed()
         self._safe_update()
 
-    def _do_bulk_price_change(self, _e):
+    def _on_bulk_group_changed(self):
+        scope = self.dd_bulk_scope.value or "ALL"
+        if scope == "CATEGORY":
+            group_name = self.dd_bulk_group.value or ""
+            cats = self._merged_sub_category_names(group_name)
+            self.dd_bulk_category.options = [ft.dropdown.Option("", "-- Hepsi --")] + [
+                ft.dropdown.Option(name, name) for name in cats
+            ]
+            self.dd_bulk_category.value = ""
+        self._safe_update()
+
+    # ── Kategori/Grup yonetimi ────────────────────────────────────────────────
+
+    def _bulk_scope_label(self, scope: str, group_name: str, category_name: str) -> str:
+        if scope == "GROUP":
+            return f"Grup: {group_name or 'Hepsi'}"
+        if scope == "CATEGORY":
+            if group_name and category_name:
+                return f"{group_name} > {category_name}"
+            if group_name:
+                return f"{group_name} > Tum alt kategoriler"
+            if category_name:
+                return f"Alt kategori: {category_name}"
+            return "Tum alt kategoriler"
+        return "Tum urunler"
+
+    def _collect_bulk_price_preview(self) -> list[dict]:
         scope = self.dd_bulk_scope.value or "ALL"
         change_type = self.dd_bulk_type.value or "PERCENT"
         direction = self.dd_bulk_direction.value or "INCREASE"
@@ -853,53 +996,219 @@ class ProductsPage(ft.Container):
             value = float((self.txt_bulk_value.value or "0").replace(",", "."))
         except ValueError:
             self._snack("Gecerli bir deger giriniz")
-            return
+            return []
         if value <= 0:
             self._snack("Deger 0'dan buyuk olmalidir")
-            return
+            return []
 
         group_name = self.dd_bulk_group.value or ""
         category_name = self.dd_bulk_category.value or ""
+        affected = []
+        for r in self._load_products(force_reload=True):
+            group = (r[10] or "") if len(r) > 10 else ""
+            sub_category = (r[11] or "") if len(r) > 11 else ""
+            if scope == "GROUP" and group_name and group != group_name:
+                continue
+            if scope == "CATEGORY" and group_name and group != group_name:
+                continue
+            if scope == "CATEGORY" and category_name and sub_category != category_name:
+                continue
 
-        # Onay diyalogu
-        scope_label = {"ALL": "Tum urunler", "GROUP": f"Grup: {group_name}", "CATEGORY": f"Kategori: {category_name}"}.get(scope, scope)
+            old_price = float(r[4] or 0)
+            delta = old_price * value / 100 if change_type == "PERCENT" else value
+            new_price = old_price + delta if direction == "INCREASE" else old_price - delta
+            affected.append({
+                "id": int(r[0]),
+                "name": r[1] or "",
+                "barcode": r[2] or "",
+                "group": group,
+                "category": sub_category,
+                "old_price": old_price,
+                "new_price": max(0.0, new_price),
+            })
+        return affected
+
+    def _render_bulk_preview_inline(self, affected: list[dict]):
+        if not affected:
+            self.lbl_bulk_preview_status.value = "Hicbir urun bu kriterlere uymuyor."
+            self.bulk_preview_table_col.controls = []
+            self._safe_update()
+            return
+
+        self.lbl_bulk_preview_status.value = (
+            f"{len(affected)} urun etkilenecek. Onizleme penceresinde tek tek duzenleyebilirsiniz."
+        )
+        rows_ui = [
+            ft.Row([
+                ft.Text("Urun Adi", size=12, weight=ft.FontWeight.W_700, expand=True),
+                ft.Text("Onceki", size=12, weight=ft.FontWeight.W_700, width=95, text_align=ft.TextAlign.RIGHT),
+                ft.Text("Yeni", size=12, weight=ft.FontWeight.W_700, width=95, text_align=ft.TextAlign.RIGHT),
+            ], spacing=4)
+        ]
+        for item in affected[:50]:
+            old_p = item["old_price"]
+            new_p = item["new_price"]
+            color = ft.Colors.GREEN_700 if new_p >= old_p else ft.Colors.RED_700
+            rows_ui.append(ft.Row([
+                ft.Text(item["name"], size=12, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(f"{old_p:.2f} TL", size=12, width=95, text_align=ft.TextAlign.RIGHT, color=ft.Colors.BLUE_GREY_700),
+                ft.Text(f"{new_p:.2f} TL", size=12, weight=ft.FontWeight.W_600, width=95, text_align=ft.TextAlign.RIGHT, color=color),
+            ], spacing=4))
+        if len(affected) > 50:
+            rows_ui.append(ft.Text(f"... ve {len(affected) - 50} urun daha", size=11, color=ft.Colors.BLUE_GREY_400))
+        self.bulk_preview_table_col.controls = rows_ui
+        self._safe_update()
+
+    def _open_bulk_preview_dialog(self, affected: list[dict]):
+        if not affected:
+            return
+
+        scope = self.dd_bulk_scope.value or "ALL"
+        change_type = self.dd_bulk_type.value or "PERCENT"
+        direction = self.dd_bulk_direction.value or "INCREASE"
+        value = float((self.txt_bulk_value.value or "0").replace(",", "."))
+        group_name = self.dd_bulk_group.value or ""
+        category_name = self.dd_bulk_category.value or ""
         direction_label = "Artis" if direction == "INCREASE" else "Azalis"
-        type_label = f"%{value:.1f}" if change_type == "PERCENT" else f"{value:.2f} TL"
+        type_label = f"%{value:.2f}" if change_type == "PERCENT" else f"{value:.2f} TL"
+        price_fields: dict[int, ft.TextField] = {}
 
-        def _confirm_do(_e):
-            self._close_dialog(dlg)
-            count = self.db.bulk_update_product_prices(
-                scope=scope, change_type=change_type, direction=direction,
-                value=value, group_name=group_name, category_name=category_name,
+        rows = [
+            ft.Row(
+                [
+                    ft.Text("Urun", size=12, weight=ft.FontWeight.W_700, expand=True),
+                    ft.Text("Onceki", size=12, weight=ft.FontWeight.W_700, width=100, text_align=ft.TextAlign.RIGHT),
+                    ft.Text("Yeni fiyat", size=12, weight=ft.FontWeight.W_700, width=130, text_align=ft.TextAlign.RIGHT),
+                ],
+                spacing=8,
+            ),
+            ft.Divider(height=1),
+        ]
+        for item in affected:
+            field = ft.TextField(
+                value=f"{item['new_price']:.2f}",
+                width=130,
+                dense=True,
+                text_align=ft.TextAlign.RIGHT,
+                keyboard_type=ft.KeyboardType.NUMBER,
             )
+            price_fields[item["id"]] = field
+            rows.append(
+                ft.Row(
+                    [
+                        ft.Column(
+                            [
+                                ft.Text(item["name"], size=12, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(item["barcode"] or "-", size=10, color=ft.Colors.BLUE_GREY_500, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                            ],
+                            spacing=1,
+                            expand=True,
+                        ),
+                        ft.Text(f"{item['old_price']:.2f} TL", size=12, width=100, text_align=ft.TextAlign.RIGHT, color=ft.Colors.BLUE_GREY_700),
+                        field,
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+            )
+
+        msg = ft.Text("", size=12, color=ft.Colors.RED_600)
+
+        def _apply(_e):
+            updates: list[tuple[int, float]] = []
+            for item in affected:
+                raw = price_fields[item["id"]].value or "0"
+                try:
+                    new_price = float(raw.replace(",", "."))
+                except ValueError:
+                    msg.value = f"Gecersiz fiyat: {item['name']}"
+                    try:
+                        self.page.update()
+                    except Exception:
+                        self._safe_update()
+                    return
+                if new_price < 0:
+                    msg.value = f"Fiyat negatif olamaz: {item['name']}"
+                    try:
+                        self.page.update()
+                    except Exception:
+                        self._safe_update()
+                    return
+                updates.append((item["id"], new_price))
+
+            count = self.db.set_product_prices(updates)
+            self._close_dialog(dlg)
             self.lbl_bulk_result.value = f"{count} urunun fiyati guncellendi."
             self.lbl_bulk_result.color = ft.Colors.GREEN_700 if count > 0 else ft.Colors.ORANGE_700
+            self.bulk_preview_table_col.controls = []
+            self.lbl_bulk_preview_status.value = "Guncelleme tamamlandi. Yeni onizleme icin tekrar Onizle'ye basin."
             self.invalidate_cache()
-            self.refresh_table()
+            self.refresh_table(force_reload=True)
             self.on_products_changed()
             self._safe_update()
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Toplu Fiyat Guncelleme Onayi"),
-            content=ft.Column([
-                ft.Text(f"Kapsam: {scope_label}"),
-                ft.Text(f"Islem: {direction_label} - {type_label}"),
-                ft.Text("Bu islem geri alinamaz!", color=ft.Colors.RED_600, weight=ft.FontWeight.W_600),
-            ], spacing=8, tight=True),
+            title=ft.Text("Toplu Fiyat Onizleme"),
+            content=ft.Container(
+                width=780,
+                height=520,
+                content=ft.Column(
+                    [
+                        ft.Container(
+                            bgcolor=ft.Colors.INDIGO_50,
+                            border_radius=8,
+                            padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                            content=ft.Column(
+                                [
+                                    ft.Text(f"Kapsam: {self._bulk_scope_label(scope, group_name, category_name)}", size=12, weight=ft.FontWeight.W_600),
+                                    ft.Text(f"Islem: {direction_label} - {type_label}", size=12, color=ft.Colors.BLUE_GREY_700),
+                                    ft.Text("Yeni fiyat alanlarini degistirerek tek urunu farkli fiyata alabilirsiniz.", size=11, color=ft.Colors.INDIGO_700),
+                                ],
+                                spacing=3,
+                            ),
+                        ),
+                        ft.Container(
+                            expand=True,
+                            content=ft.Column(rows, spacing=6, scroll=ft.ScrollMode.AUTO),
+                        ),
+                        msg,
+                    ],
+                    spacing=10,
+                ),
+            ),
             actions=[
-                ft.TextButton("Vazgec", on_click=lambda _: self._close_dialog(dlg)),
+                ft.TextButton("Kapat", on_click=lambda _: self._close_dialog(dlg)),
                 ft.ElevatedButton(
-                    "Onayla ve Guncelle",
+                    "Onizlenen Fiyatlari Uygula",
                     icon=ft.Icons.CHECK,
                     style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE_700, color=ft.Colors.WHITE),
-                    on_click=_confirm_do,
+                    on_click=_apply,
                 ),
             ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
         self._open_dialog(dlg)
 
-    # ── Kategori/Grup yonetimi ────────────────────────────────────────────────
+    def _preview_bulk_price(self, _e=None):
+        affected = self._collect_bulk_price_preview()
+        if not affected:
+            self.lbl_bulk_preview_status.value = "Hicbir urun bu kriterlere uymuyor."
+            self.bulk_preview_table_col.controls = []
+            self._safe_update()
+            return
+        self._render_bulk_preview_inline(affected)
+        self._open_bulk_preview_dialog(affected)
+
+    def _do_bulk_price_change(self, _e):
+        affected = self._collect_bulk_price_preview()
+        if not affected:
+            self.lbl_bulk_preview_status.value = "Hicbir urun bu kriterlere uymuyor."
+            self.bulk_preview_table_col.controls = []
+            self._safe_update()
+            return
+        self._render_bulk_preview_inline(affected)
+        self._open_bulk_preview_dialog(affected)
 
     def _refresh_taxonomy_lists(self):
         # Grup listesi
@@ -1110,7 +1419,7 @@ class ProductsPage(ft.Container):
                     ft.Text(f"Stok: {stock:.2f}", size=12, color=stok_color, weight=ft.FontWeight.W_600),
                 ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.END),
                 action_bar,
-            ], spacing=12, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         )
 
         # Sag tik: popup menu
@@ -1155,6 +1464,8 @@ class ProductsPage(ft.Container):
         self._products_cache_loaded = False
 
     def refresh(self):
+        self._load_category_dropdowns()
+        self._load_suppliers()
         self.refresh_table(force_reload=True)
         self._refresh_taxonomy_lists()
 
