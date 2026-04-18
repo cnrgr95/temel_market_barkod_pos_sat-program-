@@ -1422,6 +1422,7 @@ class ProductsPage(ft.Container):
 
     def _build_product_row(self, row):
         pid = int(row[0])
+        title = (row[1] or "").upper()
         stock = float(row[6] or 0)
         critical = float(row[9] if len(row) > 9 else 5)
         stok_color = ft.Colors.RED_700 if stock <= 0 else (ft.Colors.ORANGE_700 if stock <= critical else ft.Colors.GREEN_700)
@@ -1449,7 +1450,7 @@ class ProductsPage(ft.Container):
                 on_click=lambda _, _id=pid: self._toggle_quick_product(_id),
             ),
             ft.IconButton(ft.Icons.DELETE, icon_color=ft.Colors.RED_600, tooltip="Sil",
-                          on_click=lambda _, _id=pid, _n=row[1]: self._confirm_delete(_id, _n)),
+                          on_click=lambda _, _id=pid, _n=title: self._confirm_delete(_id, _n)),
         ], spacing=0)
 
         row_content = ft.Container(
@@ -1460,7 +1461,7 @@ class ProductsPage(ft.Container):
             content=ft.Row([
                 thumb,
                 ft.Column([
-                    ft.Text(row[1] or "", size=15, weight=ft.FontWeight.W_700, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(title, size=15, weight=ft.FontWeight.W_700, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Text(f"Barkod: {row[2] or '-'}", size=11, color=ft.Colors.BLUE_GREY_500),
                     ft.Row([
                         ft.Text(f"Birim: {row[3] or '-'}", size=11, color=ft.Colors.BLUE_GREY_500),
@@ -1520,6 +1521,7 @@ class ProductsPage(ft.Container):
     def refresh(self):
         self._load_category_dropdowns()
         self._load_suppliers()
+        self._refresh_quick_add_options_from_search()
         self.refresh_table(force_reload=True)
         self._refresh_taxonomy_lists()
 
@@ -1560,28 +1562,37 @@ class ProductsPage(ft.Container):
 
     def refresh_table(self, force_reload: bool = False):
         try:
-            search = (self.txt_search.value or "").strip().lower() if hasattr(self, "txt_search") else ""
+            search = (self.txt_search.value or "").strip() if hasattr(self, "txt_search") else ""
             group_filter = (self.dd_filter_group.value or "") if hasattr(self, "dd_filter_group") else ""
             query_key = (search, group_filter)
             if query_key != self._table_query_key:
                 self._table_query_key = query_key
                 self._table_page_index = 0
 
-            self._table_total = self.db.count_products(search=search, category=group_filter)
-            self._show_list_images = self._table_total <= 5000
-            max_page = max(0, (self._table_total - 1) // self._table_page_size) if self._table_total else 0
-            if self._table_page_index > max_page:
-                self._table_page_index = max_page
             offset = self._table_page_index * self._table_page_size
-            rows = self.db.search_products(
+            rows, total = self.db.search_products_with_total(
                 search=search,
                 category=group_filter,
                 limit=self._table_page_size,
                 offset=offset,
             )
+            self._table_total = total
+            self._show_list_images = self._table_total <= 1500
+            max_page = max(0, (self._table_total - 1) // self._table_page_size) if self._table_total else 0
+            if self._table_page_index > max_page:
+                self._table_page_index = max_page
+                offset = self._table_page_index * self._table_page_size
+                rows, total = self.db.search_products_with_total(
+                    search=search,
+                    category=group_filter,
+                    limit=self._table_page_size,
+                    offset=offset,
+                )
+                self._table_total = total
 
-            self._refresh_quick_add_options_from_search()
-            self._refresh_quick_selection_panel()
+            if getattr(self._tabs, "selected_index", 0) == 1:
+                self._refresh_quick_add_options_from_search()
+                self._refresh_quick_selection_panel()
 
             if not rows:
                 self.lbl_page_info.value = "0 urun"

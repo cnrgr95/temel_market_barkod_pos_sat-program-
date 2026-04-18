@@ -1,5 +1,10 @@
 import os
 import sys
+import json
+import re
+import urllib.error
+import urllib.request
+import webbrowser
 import flet as ft
 
 from flet_pos.db import DB
@@ -19,6 +24,10 @@ from flet_pos.services.backup import BackupManager
 
 
 class FletMarketApp:
+    APP_VERSION = "V 1.0.2"
+    RELEASES_REPO_URL = "https://github.com/cnrgr95/temel_market_barkod_pos_sat-program-"
+    RELEASES_API_LATEST = "https://api.github.com/repos/cnrgr95/temel_market_barkod_pos_sat-program-/releases/latest"
+
     def __init__(self, page: ft.Page):
         self.page = page
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,7 +162,7 @@ class FletMarketApp:
         def _nav_btn(label, key, icon):
             return ft.TextButton(
                 content=ft.Column(
-                    [ft.Icon(icon, size=20), ft.Text(label, size=10)],
+                    [ft.Icon(icon, size=20), ft.Text((label or "").upper(), size=10)],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=2,
                     tight=True,
@@ -191,6 +200,12 @@ class FletMarketApp:
                     ),
                     # Sağ: Kullanıcı + çıkış
                     ft.Row([
+                        ft.IconButton(
+                            ft.Icons.SYSTEM_UPDATE_ALT,
+                            tooltip="Surum ve Guncelleme Merkezi",
+                            icon_color=ft.Colors.WHITE,
+                            on_click=lambda _: self._open_update_center_dialog(),
+                        ),
                         ft.Container(
                             bgcolor=ft.Colors.with_opacity(0.2, ft.Colors.WHITE),
                             border_radius=16,
@@ -225,6 +240,167 @@ class FletMarketApp:
         )
         # Overlay bozulmasın: page.add yerine root container swap
         self._root.content = main_col
+        self.page.update()
+
+    @staticmethod
+    def _version_tuple(version_text: str) -> tuple[int, int, int]:
+        nums = [int(v) for v in re.findall(r"\d+", str(version_text or ""))]
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums[:3])
+
+    @classmethod
+    def _is_newer_version(cls, latest: str, current: str) -> bool:
+        return cls._version_tuple(latest) > cls._version_tuple(current)
+
+    def _open_update_center_dialog(self):
+        latest = "-"
+        release_url = f"{self.RELEASES_REPO_URL}/releases"
+        status_text = "Kontrol edilmedi"
+        status_color = ft.Colors.BLUE_GREY_700
+
+        try:
+            latest, release_url = self._fetch_latest_release_info()
+            has_update = self._is_newer_version(latest, self.APP_VERSION)
+            status_text = "Yeni surum mevcut" if has_update else "Sistem surumu guncel"
+            status_color = ft.Colors.ORANGE_700 if has_update else ft.Colors.GREEN_700
+        except (urllib.error.URLError, ValueError, json.JSONDecodeError) as ex:
+            status_text = f"Kontrol hatasi: {ex}"
+            status_color = ft.Colors.RED_600
+            has_update = False
+
+        def _check_again(_e=None):
+            self._close_dialog(dlg)
+            self._open_update_center_dialog()
+
+        def _confirm_update(_e=None):
+            self._open_update_confirm_dialog(latest, release_url)
+
+        actions = [
+            ft.TextButton("Kapat", on_click=lambda _: self._close_dialog(dlg)),
+            ft.OutlinedButton("Tekrar Kontrol Et", icon=ft.Icons.REFRESH, on_click=_check_again),
+        ]
+        if has_update:
+            actions.append(
+                ft.ElevatedButton(
+                    "Guncellemeyi Onayla",
+                    icon=ft.Icons.CHECK_CIRCLE,
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.ORANGE_700, color=ft.Colors.WHITE),
+                    on_click=_confirm_update,
+                )
+            )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, color=ft.Colors.INDIGO_700),
+                ft.Text("Surum ve Manuel Guncelleme Merkezi", weight=ft.FontWeight.W_700),
+            ], spacing=8),
+            content=ft.Container(
+                width=560,
+                content=ft.Column([
+                    ft.Text(f"Sistem Surumu: {self.APP_VERSION}", weight=ft.FontWeight.W_700),
+                    ft.Text(f"Releases Son Surum: {latest}"),
+                    ft.Text(f"Durum: {status_text}", color=status_color, weight=ft.FontWeight.W_700),
+                    ft.Text("Tum guncellemeler manuel yapilir. Otomatik zorla guncelleme yok.", size=12),
+                    ft.Text("Releases kaynagi:", size=12),
+                    ft.Text(release_url, selectable=True, size=12, color=ft.Colors.BLUE_700),
+                ], spacing=8, tight=True),
+            ),
+            actions=actions,
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dlg)
+
+    def _fetch_latest_release_info(self) -> tuple[str, str]:
+        return self._fetch_latest_release_info_with_timeout(12)
+
+    def _fetch_latest_release_info_with_timeout(self, timeout_seconds: int) -> tuple[str, str]:
+        req = urllib.request.Request(
+            self.RELEASES_API_LATEST,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "temel-market-pos",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        latest_version = (payload.get("name") or payload.get("tag_name") or "").strip()
+        release_url = (payload.get("html_url") or f"{self.RELEASES_REPO_URL}/releases").strip()
+        if not latest_version:
+            raise ValueError("Releases bilgisi okunamadi")
+        return latest_version, release_url
+
+    def _notify_update_on_login(self):
+        def _worker():
+            try:
+                latest, _release_url = self._fetch_latest_release_info_with_timeout(4)
+                if not self._is_newer_version(latest, self.APP_VERSION):
+                    return
+                msg = f"Guncelleme var: {latest} (Sistem: {self.APP_VERSION})"
+                try:
+                    self.page.snack_bar = ft.SnackBar(
+                        ft.Text(msg),
+                        open=True,
+                        behavior=ft.SnackBarBehavior.FLOATING,
+                        margin=ft.margin.only(right=16, bottom=16),
+                    )
+                except Exception:
+                    self.page.snack_bar = ft.SnackBar(ft.Text(msg), open=True)
+                self.page.update()
+            except Exception:
+                # Giris akisini asla bloklama
+                pass
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _open_update_confirm_dialog(self, latest: str, release_url: str):
+        def _go_release(_e=None):
+            try:
+                webbrowser.open(release_url)
+                self.page.snack_bar = ft.SnackBar(ft.Text("Releases sayfasi aciliyor"), open=True)
+                self.page.update()
+            except Exception:
+                self.page.snack_bar = ft.SnackBar(ft.Text(release_url), open=True)
+                self.page.update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER, color=ft.Colors.ORANGE_700),
+                ft.Text("Guncelleme Onayi", weight=ft.FontWeight.W_700, color=ft.Colors.ORANGE_700),
+            ], spacing=8),
+            content=ft.Container(
+                width=560,
+                content=ft.Column([
+                    ft.Text(f"Yeni surum: {latest}"),
+                    ft.Text("Yedek alin, yedeklerden kisi sorumludur.", color=ft.Colors.RED_700, weight=ft.FontWeight.W_700),
+                    ft.Text("Devam etmek isterseniz Releases sayfasini manuel olarak acabilirsiniz."),
+                    ft.Text(release_url, selectable=True, size=12, color=ft.Colors.BLUE_700),
+                ], spacing=8, tight=True),
+            ),
+            actions=[
+                ft.TextButton("Vazgec", on_click=lambda _: self._close_dialog(dlg)),
+                ft.ElevatedButton(
+                    "Sistemden Guncellemeyi Baslat",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.INDIGO_700, color=ft.Colors.WHITE),
+                    on_click=_go_release,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dlg)
+
+    def _open_dialog(self, dlg: ft.AlertDialog):
+        if dlg not in self.page.overlay:
+            self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _close_dialog(self, dlg: ft.AlertDialog):
+        dlg.open = False
         self.page.update()
 
     def _update_nav_btn_style(self, btn: ft.TextButton, active: bool) -> ft.TextButton:
@@ -416,14 +592,16 @@ class FletMarketApp:
         page = self._ensure_page(key)
         if not page:
             return
+        # 1. UI'ı ANINDA göster — veri bekleme yok
         self.content_host.content = page
         self.page.update()
-        # Trigger initial data load on first visit (did_mount is not called on
-        # ft.Container subclasses in Flet 0.84 – we simulate it here)
+        # 2. İlk ziyarette veri yüklemeyi arka planda başlat
         if key not in self._shown_pages:
             self._shown_pages.add(key)
             self._schedule_refresh_page_data(key)
-            self.page.update()  # Force full repaint after data is loaded
+            # NOT: İkinci page.update() kaldırıldı — veri async gelir, kendi update'ini çağırır
+
+
 
     def _show_login(self):
         username = ft.TextField(
@@ -500,7 +678,7 @@ class FletMarketApp:
                 if self.backup_manager._thread and self.backup_manager._thread.is_alive():
                     self.backup_manager._thread.join(timeout=2.0)
                 self.backup_manager.backup_now(prefix="exit")
-        except Exception as ex:
+        except Exception:
             import traceback
             traceback.print_exc()
         finally:
@@ -585,10 +763,7 @@ class FletMarketApp:
             ),
         ]
 
-        if dlg not in self.page.overlay:
-            self.page.overlay.append(dlg)
-        dlg.open = True
-        self.page.update()
+        self._open_dialog(dlg)
 
     def _start_main_shell(self):
         # Overlay bozulmasın — page controls hiç temizlenmez,
@@ -604,6 +779,7 @@ class FletMarketApp:
         self._build_layout()  # → self._root.content = main_col
         self._apply_responsive_nav()
         self._nav_to("pos")
+        self._notify_update_on_login()
 
 
 def main(page: ft.Page):

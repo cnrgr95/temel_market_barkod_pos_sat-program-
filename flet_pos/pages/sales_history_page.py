@@ -185,9 +185,9 @@ class SalesHistoryPage(ft.Container):
 
         self.sales_table.rows = []
         for r in rows:
-            sale_id, sale_time, pay_type, total, discount, cash, card, transfer, is_return = (
+            sale_id, sale_time, pay_type, total, discount, is_return = (
                 r[0], r[1], r[2], float(r[3] or 0), float(r[4] or 0),
-                float(r[5] or 0), float(r[6] or 0), float(r[7] or 0), int(r[8] or 0)
+                int(r[8] or 0)
             )
             type_color = ft.Colors.RED_700 if is_return else ft.Colors.GREEN_700
             type_text = "IADE" if is_return else "SATIS"

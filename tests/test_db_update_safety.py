@@ -151,6 +151,42 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertIn("<svg", svg)
         self.assertIn(barcode, svg)
 
+    def test_normalize_all_product_titles_upper_updates_existing_rows(self):
+        db = DB(self._temp_db_path())
+        db.upsert_product(barcode="8690000000102", name="Kahve", category="icecek", sub_category="sicak")
+
+        with db.conn() as conn:
+            conn.execute(
+                """
+                UPDATE products
+                SET name='karisik CAY', category='manav', sub_category='yesillik'
+                WHERE barcode='8690000000102'
+                """
+            )
+            conn.commit()
+
+        changed = db.normalize_all_product_titles_upper()
+        self.assertGreaterEqual(changed, 1)
+
+        with db.conn() as conn:
+            row = conn.execute(
+                "SELECT name, category, sub_category FROM products WHERE barcode='8690000000102'"
+            ).fetchone()
+        self.assertEqual(row[0], "KARISIK CAY")
+        self.assertEqual(row[1], "MANAV")
+        self.assertEqual(row[2], "YESILLIK")
+
+    def test_search_products_returns_match_for_partial_name_and_barcode(self):
+        db = DB(self._temp_db_path())
+        db.upsert_product(barcode="8690000000201", name="DOMATES SOS", category="GIDA")
+        db.upsert_product(barcode="8690000000202", name="BIBER SALCASI", category="GIDA")
+
+        by_name = db.search_products(search="sos", limit=20, offset=0)
+        by_barcode = db.search_products(search="8690000000202", limit=20, offset=0)
+
+        self.assertTrue(any(r[2] == "8690000000201" for r in by_name))
+        self.assertTrue(any(r[2] == "8690000000202" for r in by_barcode))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -144,7 +144,10 @@ class BackupManager:
             if is_new:
                 f.write("time,status,type,local_path,drive_path,message\n")
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            clean = lambda v: str(v or "").replace("\n", " ").replace(",", ";")
+
+            def clean(v):
+                return str(v or "").replace("\n", " ").replace(",", ";")
+
             f.write(
                 f"{stamp},{clean(status)},{clean(prefix)},{clean(local_path)},"
                 f"{clean(drive_path)},{clean(message)}\n"

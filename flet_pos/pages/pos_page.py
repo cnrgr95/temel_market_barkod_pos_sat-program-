@@ -8,6 +8,7 @@ import asyncio
 import flet as ft
 
 from flet_pos.services.pricing import compute_prices
+from flet_pos.services.async_runner import run_bg
 
 # Banknot değerleri (TL)
 _BANKNOTES = [1, 5, 10, 20, 50, 100, 200]
@@ -20,6 +21,7 @@ class POSPage(ft.Container):
         self.current_user = current_user or {}
         self.on_unknown_barcode = on_unknown_barcode
         self._last_unknown_barcode = ""
+        self._unknown_dialog_open = False
         self._unknown_barcode_value = ""
         self._unknown_search_value = ""
         self._products_cache: list = []
@@ -30,13 +32,14 @@ class POSPage(ft.Container):
         self._quick_filter_value = ""
         self._quick_limit = 36
         self._grid_page_index = 0
-        self._grid_page_size = 120
+        self._grid_page_size = 60          # 120'den düşürüldü — daha hızlı render
         self._grid_total = 0
         self._grid_query_key = ("", "")
         self._product_cache_by_id = {}
         self._product_cache_by_barcode = {}
         self._grid_refresh_timer = None
         self._show_grid_images = True
+        self._cats_cache: list[str] = []  # Kategori listesi cache
         self._scanner_buffer = ""
         self._last_key_time = 0
         self._media_dir = os.path.join(
@@ -44,6 +47,17 @@ class POSPage(ft.Container):
             "product_images",
         )
         os.makedirs(self._media_dir, exist_ok=True)
+        # Loading overlay (grid Stack içinde kullanılır)
+        self._loading_overlay = ft.Container(
+            alignment=ft.Alignment(0, 0),
+            bgcolor=ft.Colors.with_opacity(0.55, ft.Colors.WHITE),
+            visible=False,
+            expand=True,
+            content=ft.Column([
+                ft.ProgressRing(width=44, height=44, stroke_width=4, color=ft.Colors.INDIGO_500),
+                ft.Text("Ürünler yükleniyor...", size=12, color=ft.Colors.BLUE_GREY_600),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10, tight=True),
+        )
 
         # 4 bağımsız sepet
         self._baskets: list[list[dict]] = [[], [], [], []]
@@ -306,6 +320,23 @@ class POSPage(ft.Container):
                         padding=ft.padding.symmetric(horizontal=8),
                         content=self._basket_tab_row,
                     ),
+                    # ── Sepeti Boşalt ──────────────────────────────
+                    ft.Container(
+                        padding=ft.padding.symmetric(horizontal=8, vertical=2),
+                        content=ft.ElevatedButton(
+                            "🗑  Sepeti Boşalt",
+                            style=ft.ButtonStyle(
+                                bgcolor=ft.Colors.RED_50,
+                                color=ft.Colors.RED_700,
+                                side=ft.BorderSide(1, ft.Colors.RED_300),
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                            ),
+                            expand=True,
+                            height=34,
+                            on_click=lambda _: self._confirm_clear_cart(),
+                        ),
+                    ),
                     # ── Barkod + Adet ─────────────────────────────
                     # dd_product_picker görünmez — sadece senkronizasyon için tutulur
                     ft.Container(content=self.dd_product_picker, visible=False, height=0),
@@ -540,12 +571,15 @@ class POSPage(ft.Container):
                         alignment=ft.MainAxisAlignment.END,
                         spacing=6,
                     ),
-                    # Ürün grid — expand ile daha büyük alan
+                    # Ürün grid — Stack ile loading overlay destekli
                     ft.Container(
-                        content=self.products_grid,
                         expand=3,
                         bgcolor=ft.Colors.GREY_100,
                         padding=ft.padding.all(6),
+                        content=ft.Stack([
+                            self.products_grid,
+                            self._loading_overlay,
+                        ]),
                     ),
                 ],
             ),
@@ -560,6 +594,85 @@ class POSPage(ft.Container):
             self.update()
         except Exception:
             pass
+
+    # ── Async / background helpers ────────────────────────────────────────────
+
+    def _run_bg(self, fn, on_done, on_error=None):
+        """DB işlemini arka planda çalıştır — UI thread'ini bloke etmez."""
+        run_bg(fn, on_done, on_error)
+
+    def _set_grid_loading(self, loading: bool):
+        """Grid üzerine yükleniyor overlay göster/gizle."""
+        try:
+            self._loading_overlay.visible = loading
+            self._safe_update()
+        except Exception:
+            pass
+
+    def _confirm_clear_cart(self):
+        """Sepeti boşaltmadan önce onay dialogı göster."""
+        if not self.cart:
+            self._snack("Sepet zaten boş")
+            return
+        n = len(self.cart)
+
+        def _do_clear(_e):
+            self._close_dialog(dlg)
+            self._clear_cart()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.DELETE_SWEEP, color=ft.Colors.RED_600, size=22),
+                ft.Text("Sepeti Boşalt", color=ft.Colors.RED_700,
+                        weight=ft.FontWeight.BOLD, size=14),
+            ], spacing=8),
+            content=ft.Container(
+                width=340,
+                content=ft.Text(
+                    f"{n} kalem sepetten silinecek. Emin misiniz?",
+                    size=14, color=ft.Colors.BLUE_GREY_700,
+                ),
+            ),
+            actions=[
+                ft.TextButton("İptal", on_click=lambda _: self._close_dialog(dlg)),
+                ft.ElevatedButton(
+                    "Sepeti Boşalt",
+                    icon=ft.Icons.DELETE_SWEEP,
+                    style=ft.ButtonStyle(
+                        bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE,
+                    ),
+                    on_click=_do_clear,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._open_dialog(dlg)
+
+    def _apply_category_tabs(self, cats: list[str]):
+        """Kategori tab butonlarını cats listesinden oluştur (DB sorgusu yok)."""
+        all_cats = ["TÜMÜ"] + (cats or [])
+        self.tabs_category.controls = [
+            ft.ElevatedButton(
+                cat,
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.INDIGO_700 if (
+                        (self._category_filter == cat) or
+                        (cat == "TÜMÜ" and not self._category_filter)
+                    ) else ft.Colors.WHITE,
+                    color=ft.Colors.WHITE if (
+                        (self._category_filter == cat) or
+                        (cat == "TÜMÜ" and not self._category_filter)
+                    ) else ft.Colors.BLUE_GREY_700,
+                    side=ft.BorderSide(1, ft.Colors.BLUE_GREY_200),
+                    shape=ft.RoundedRectangleBorder(radius=16),
+                    padding=ft.padding.symmetric(horizontal=10, vertical=2),
+                ),
+                height=30,
+                on_click=lambda _, c=cat: self._filter_category(c),
+            )
+            for cat in all_cats
+        ]
 
     def _run_ui_call(self, result):
         if inspect.isawaitable(result):
@@ -704,35 +817,45 @@ class POSPage(ft.Container):
         except Exception:
             pass
 
+
     def handle_keyboard_event(self, e: ft.KeyboardEvent) -> bool:
-        """Capture barcode scans even if the search field is not focused."""
+        """Barkod okuyucu: Enter'da direkt işler. Bilinmeyen barkod → bir kez popup açar."""
         import time
 
         now = time.time()
-        if now - self._last_key_time > 0.1:
+        if now - self._last_key_time > 0.3:
             self._scanner_buffer = ""
         self._last_key_time = now
 
         if e.key == "Enter":
-            if len(self._scanner_buffer) >= 3:
-                self.txt_search.value = self._scanner_buffer
-                self._scanner_buffer = ""
-                self._safe_update()
-                try:
-                    self._run_ui_call(self.txt_search.focus())
-                except Exception:
-                    pass
-                self._search_and_add()
-                return True
+            buf = self._scanner_buffer.strip()
             self._scanner_buffer = ""
+            if len(buf) >= 3:
+                barcode = self._normalize_barcode(buf)
+                if barcode:
+                    row = self._find_cached_by_barcode(barcode)
+                    if row:
+                        self._add_product_to_cart(row)
+                        self.txt_search.value = ""
+                        self._hide_unknown_prompt("all")
+                        self._safe_update()
+                        return True
+                    # Bilinmeyen barkod — açık dialog yoksa popup aç
+                    self.txt_search.value = ""
+                    self._hide_unknown_prompt("all")
+                    self._safe_update()
+                    self._show_quick_product_dialog(barcode)  # force=False: guard aktif
+                    return True
             return False
 
-        if len(e.key) == 1 and e.key.isalnum():
+        if len(e.key) == 1 and (e.key.isalnum() or e.key in "-_."):
             self._scanner_buffer += e.key
             return True
         if len(e.key) == 1:
             self._scanner_buffer = ""
         return False
+
+
 
     # ── Sepet sekmeleri ───────────────────────────────────────────────────────
 
@@ -930,14 +1053,19 @@ class POSPage(ft.Container):
 
     def _on_search_changed(self):
         query = self._normalize_barcode(self.txt_search.value)
-        # Her değişimde grid filtresi çalışsın
+        # Her degisimde grid filtresi calissin
         self._hide_unknown_prompt("search")
         if not query:
             if self._grid_filter_value:
                 self._grid_filter_value = ""
                 self.schedule_refresh_products_grid()
             return
-        # Barkod formatındaysa Enter beklemeden otomatik eklemeyi dene
+        if self._grid_filter_value != query:
+            self._grid_filter_value = query
+            self._grid_page_index = 0
+            self.schedule_refresh_products_grid()
+
+        # Barkod formatindaysa Enter beklemeden otomatik eklemeyi dene
         if not self._looks_like_barcode(query):
             return
         row = self._find_cached_by_barcode(query)
@@ -948,7 +1076,8 @@ class POSPage(ft.Container):
             self.schedule_refresh_products_grid()
             self._safe_update()
             return
-        if len(query) >= 8:
+        # Olasi barkod, urun bulunamadi
+        if len(query) >= 3:
             self._show_unknown_prompt("search", query)
 
     def _on_dropdown_changed(self):
@@ -983,8 +1112,7 @@ class POSPage(ft.Container):
             return
 
         # 2) İsme göre arama — tek eşleşme varsa direkt ekle
-        q_lower = query.lower()
-        matches = self.db.search_products(search=q_lower, limit=50, offset=0)
+        matches = self.db.search_products(search=query, limit=50, offset=0)
 
         if len(matches) == 1:
             self._add_product_to_cart(matches[0])
@@ -1002,11 +1130,13 @@ class POSPage(ft.Container):
             self._snack(f"{len(matches)} ürün bulundu — listeden seçin")
             return
 
-        # 3) Hiç bulunamadı
+        # 3) Hiç bulunamadı — barkod gibi görünüyorsa anlık popup aç
         if self._looks_like_barcode(query):
-            self._show_quick_product_dialog(query)
+            self._show_quick_product_dialog(query)  # force=False: guard aktif
         else:
             self._snack("Ürün bulunamadı")
+
+
 
     def _add_by_barcode(self):
         barcode = self._normalize_barcode(self.txt_barcode.value)
@@ -1025,6 +1155,8 @@ class POSPage(ft.Container):
     def _show_quick_product_dialog(self, barcode: str, force: bool = False) -> bool:
         barcode = self._normalize_barcode(barcode)
         if not barcode:
+            return False
+        if self._unknown_dialog_open:
             return False
         if (not force) and self._last_unknown_barcode == barcode:
             return False
@@ -1139,7 +1271,7 @@ class POSPage(ft.Container):
 
         def close_dialog(_e=None):
             self._close_dialog(dlg)
-            self._last_unknown_barcode = ""
+            self._unknown_dialog_open = False
             try:
                 self._run_ui_call(self.txt_search.focus())
             except Exception:
@@ -1188,6 +1320,7 @@ class POSPage(ft.Container):
                 is_scale_product=bool(sw_scale.value),
             )
             self._last_unknown_barcode = ""
+            self._unknown_dialog_open = False
             self.txt_barcode.value = ""
             self.txt_search.value = ""
             self._grid_filter_value = ""
@@ -1335,7 +1468,9 @@ class POSPage(ft.Container):
         )
         refresh_sub_categories()
         refresh_price_info()
-        return self._open_dialog(dlg)
+        opened = self._open_dialog(dlg)
+        self._unknown_dialog_open = bool(opened)
+        return opened
 
     def _open_unknown_quick(self, source: str):
         if source == "barcode":
@@ -1478,58 +1613,96 @@ class POSPage(ft.Container):
     # ── Ürün grid ─────────────────────────────────────────────────────────────
 
     def refresh_products_grid(self, force_reload: bool = False):
-        search = (self._grid_filter_value or "").strip().lower()
+        """Urun grid'ini anlik ve kararlı sekilde yeniler."""
+        search = (self._grid_filter_value or "").strip()
         category = self._category_filter
         query_key = (search, category)
         if query_key != self._grid_query_key:
             self._grid_query_key = query_key
             self._grid_page_index = 0
 
-        self._grid_total = self.db.count_products(search=search, category=category)
-        self._show_grid_images = self._grid_total <= 3000
-        max_page = max(0, (self._grid_total - 1) // self._grid_page_size) if self._grid_total else 0
-        if self._grid_page_index > max_page:
-            self._grid_page_index = max_page
-        offset = self._grid_page_index * self._grid_page_size
-        rows = self.db.search_products(
-            search=search,
-            category=category,
-            limit=self._grid_page_size,
-            offset=offset,
-        )
-        self._cache_products(rows)
+        page_idx = self._grid_page_index
+        page_size = self._grid_page_size
+        offset = page_idx * page_size
+        need_cats = force_reload or not self._cats_cache
 
-        if force_reload:
-            self._build_category_tabs()
-        else:
-            self._build_category_tabs()
+        self._set_grid_loading(True)
+        try:
+            rows, total = self.db.search_products_with_total(
+                search=search,
+                category=category,
+                limit=page_size,
+                offset=offset,
+            )
+            cats = self.db.list_categories() if need_cats else self._cats_cache
 
-        if rows:
-            self.products_grid.controls = [self._product_card(r) for r in rows]
-        else:
-            self.products_grid.controls = [
-                ft.Container(
-                    padding=ft.padding.all(12),
-                    alignment=ft.Alignment(0, 0),
-                    content=ft.Text("Urun bulunamadi", size=12, color=ft.Colors.BLUE_GREY_400),
+            if cats and cats != self._cats_cache:
+                self._cats_cache = cats
+                self._apply_category_tabs(cats)
+            elif not self._cats_cache and cats:
+                self._cats_cache = cats
+                self._apply_category_tabs(cats)
+
+            self._grid_total = total
+            self._show_grid_images = total <= 500
+
+            max_page = max(0, (total - 1) // page_size) if total else 0
+            if self._grid_page_index > max_page:
+                self._grid_page_index = max_page
+                offset = self._grid_page_index * page_size
+                rows, total = self.db.search_products_with_total(
+                    search=search,
+                    category=category,
+                    limit=page_size,
+                    offset=offset,
                 )
+                self._grid_total = total
+
+            self._cache_products(rows)
+
+            if rows:
+                self.products_grid.controls = [self._product_card(r) for r in rows]
+            else:
+                self.products_grid.controls = [
+                    ft.Container(
+                        padding=ft.padding.all(12),
+                        alignment=ft.Alignment(0, 0),
+                        content=ft.Text("Urun bulunamadi", size=12, color=ft.Colors.BLUE_GREY_400),
+                    )
+                ]
+
+            self.dd_product_picker.options = [
+                ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in rows
             ]
-        self.dd_product_picker.options = [ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in rows]
-        total_pages = max_page + 1 if self._grid_total else 1
-        if rows:
-            self.lbl_grid_page.value = f"Sayfa {self._grid_page_index + 1}/{total_pages} | Toplam {self._grid_total}"
-            self.btn_grid_prev.disabled = self._grid_page_index <= 0
-            self.btn_grid_next.disabled = self._grid_page_index >= max_page
-        else:
-            self.lbl_grid_page.value = "0 urun"
-            self.btn_grid_prev.disabled = True
-            self.btn_grid_next.disabled = True
-        self._safe_update()
+            total_pages = max_page + 1 if total else 1
+            if rows:
+                self.lbl_grid_page.value = (
+                    f"Sayfa {self._grid_page_index + 1}/{total_pages} | Toplam {total}"
+                )
+                self.btn_grid_prev.disabled = self._grid_page_index <= 0
+                self.btn_grid_next.disabled = self._grid_page_index >= max_page
+            else:
+                self.lbl_grid_page.value = "0 urun"
+                self.btn_grid_prev.disabled = True
+                self.btn_grid_next.disabled = True
+        finally:
+            self._set_grid_loading(False)
+
 
     def refresh_customers(self):
-        rows = self.db.list_customers()
-        self.dd_customer.options = [ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in rows]
-        self._safe_update()
+        """Müşteri listesini arka planda yükle."""
+        def _load():
+            return self.db.list_customers()
+
+        def _apply(rows):
+            self.dd_customer.options = [
+                ft.dropdown.Option(f"{r[0]} - {r[1]}") for r in rows
+            ]
+            self._safe_update()
+
+        self._run_bg(_load, _apply)
+
+
 
     def _product_card(self, row):
         _product_id, name, _barcode, unit, price_incl, vat_rate, stock, image_path, _is_scale, *_ = row

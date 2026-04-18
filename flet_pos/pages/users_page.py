@@ -338,15 +338,24 @@ class UsersPage(ft.Container):
             role_color = role_colors.get(role, ft.Colors.BLUE_GREY_700)
 
             modules = []
-            if can_products: modules.append("Urun")
-            if can_stock: modules.append("Stok")
-            if can_customers: modules.append("Cari")
-            if can_suppliers: modules.append("Tedarik")
-            if can_cash: modules.append("Kasa")
-            if can_users: modules.append("Kullanici")
-            if can_backup: modules.append("Yedek")
-            if can_hardware: modules.append("Donanim")
-            if can_sales_history: modules.append("SatisGecmisi")
+            if can_products:
+                modules.append("Urun")
+            if can_stock:
+                modules.append("Stok")
+            if can_customers:
+                modules.append("Cari")
+            if can_suppliers:
+                modules.append("Tedarik")
+            if can_cash:
+                modules.append("Kasa")
+            if can_users:
+                modules.append("Kullanici")
+            if can_backup:
+                modules.append("Yedek")
+            if can_hardware:
+                modules.append("Donanim")
+            if can_sales_history:
+                modules.append("SatisGecmisi")
             modules_text = ", ".join(modules) if modules else "-"
 
             self.table.rows.append(

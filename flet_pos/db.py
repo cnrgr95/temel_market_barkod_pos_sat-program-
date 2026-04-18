@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sqlite3
+import threading
 from datetime import datetime
 
 
@@ -36,20 +37,29 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _to_upper_trim(value: str | None) -> str:
+    return str(value or "").strip().upper()
+
+
 class DB:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        self._local = threading.local()  # Thread-local kalici baglanti
         self._setup()
 
     def conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.db_path, timeout=15, factory=_ClosingConnection)
-        c.execute("PRAGMA foreign_keys = ON")
-        c.execute("PRAGMA busy_timeout = 15000")
-        c.execute("PRAGMA journal_mode = WAL")
-        c.execute("PRAGMA synchronous = NORMAL")
-        c.execute("PRAGMA temp_store = MEMORY")
-        c.execute("PRAGMA cache_size = -8000")
-        c.execute("PRAGMA mmap_size = 67108864")
+        """Thread-local kalici SQLite baglantisi dondurur. PRAGMA'lar sadece ilk baglantiida calisisir."""
+        c = getattr(self._local, "connection", None)
+        if c is None:
+            c = sqlite3.connect(self.db_path, timeout=15, check_same_thread=False)
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("PRAGMA busy_timeout = 15000")
+            c.execute("PRAGMA journal_mode = WAL")
+            c.execute("PRAGMA synchronous = NORMAL")
+            c.execute("PRAGMA temp_store = MEMORY")
+            c.execute("PRAGMA cache_size = -8000")
+            c.execute("PRAGMA mmap_size = 67108864")
+            self._local.connection = c
         return c
 
     def _setup(self) -> None:
@@ -584,6 +594,10 @@ class DB:
         supplier_id: int | None = None,
         old_stock: float | None = None,
     ) -> bool:
+        barcode = (barcode or "").strip()
+        name = _to_upper_trim(name)
+        category = _to_upper_trim(category)
+        sub_category = _to_upper_trim(sub_category)
         with self.conn() as conn:
             cur = conn.cursor()
             row = cur.execute("SELECT id, stock FROM products WHERE barcode=?", (barcode,)).fetchone()
@@ -652,6 +666,23 @@ class DB:
             conn.execute("UPDATE products SET is_active=0 WHERE id=?", (product_id,))
             conn.commit()
 
+    def normalize_all_product_titles_upper(self) -> int:
+        """Mevcut tum urun ad/kategori alanlarini buyuk harfe cevirir."""
+        with self.conn() as conn:
+            cur = conn.cursor()
+            before = conn.total_changes
+            cur.execute(
+                """
+                UPDATE products
+                SET name = UPPER(TRIM(COALESCE(name, ''))),
+                    category = UPPER(TRIM(COALESCE(category, ''))),
+                    sub_category = UPPER(TRIM(COALESCE(sub_category, '')))
+                WHERE COALESCE(is_active,1)=1
+                """
+            )
+            conn.commit()
+            return int(conn.total_changes - before)
+
     def list_products(self, include_inactive: bool = False):
         with self.conn() as conn:
             where = "" if include_inactive else "WHERE COALESCE(is_active,1)=1"
@@ -681,9 +712,17 @@ class DB:
             params.append(category)
         if search:
             s = search.strip()
-            pattern = f"{s}%" if len(s) >= 3 and (" " not in s) else f"%{s}%"
-            where_parts.append("(name LIKE ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE)")
-            params.extend([pattern, pattern])
+            pattern_prefix = f"{s}%"
+            pattern_contains = f"%{s}%"
+            where_parts.append(
+                "(" 
+                "name LIKE ? COLLATE NOCASE OR "
+                "name LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE"
+                ")"
+            )
+            params.extend([pattern_prefix, pattern_contains, pattern_prefix, pattern_contains])
         stock_filter = (stock_filter or "ALL").upper()
         if stock_filter == "LOW":
             where_parts.append("stock > 0 AND stock <= COALESCE(critical_stock, 5)")
@@ -717,9 +756,17 @@ class DB:
             params.append(category)
         if search:
             s = search.strip()
-            pattern = f"{s}%" if len(s) >= 3 and (" " not in s) else f"%{s}%"
-            where_parts.append("(name LIKE ? COLLATE NOCASE OR barcode LIKE ? COLLATE NOCASE)")
-            params.extend([pattern, pattern])
+            pattern_prefix = f"{s}%"
+            pattern_contains = f"%{s}%"
+            where_parts.append(
+                "(" 
+                "name LIKE ? COLLATE NOCASE OR "
+                "name LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE"
+                ")"
+            )
+            params.extend([pattern_prefix, pattern_contains, pattern_prefix, pattern_contains])
         stock_filter = (stock_filter or "ALL").upper()
         if stock_filter == "LOW":
             where_parts.append("stock > 0 AND stock <= COALESCE(critical_stock, 5)")
@@ -739,6 +786,66 @@ class DB:
                 """,
                 params,
             ).fetchall()
+
+    def search_products_with_total(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        stock_filter: str = "ALL",
+        limit: int = 60,
+        offset: int = 0,
+        include_inactive: bool = False,
+    ) -> tuple:
+        """COUNT + SELECT tek sorguda döner — 2 round-trip yerine 1 (SQLite window fn).
+        Returns: (rows, total_count)
+        """
+        where_parts: list = []
+        params: list = []
+        if not include_inactive:
+            where_parts.append("COALESCE(is_active,1)=1")
+        if category:
+            where_parts.append("category=?")
+            params.append(category)
+        if search:
+            s = search.strip()
+            pattern_prefix = f"{s}%"
+            pattern_contains = f"%{s}%"
+            where_parts.append(
+                "(" 
+                "name LIKE ? COLLATE NOCASE OR "
+                "name LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE OR "
+                "barcode LIKE ? COLLATE NOCASE"
+                ")"
+            )
+            params.extend([pattern_prefix, pattern_contains, pattern_prefix, pattern_contains])
+        stock_filter = (stock_filter or "ALL").upper()
+        if stock_filter == "LOW":
+            where_parts.append("stock > 0 AND stock <= COALESCE(critical_stock, 5)")
+        elif stock_filter == "OUT":
+            where_parts.append("stock <= 0")
+
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        query_params = params + [int(limit), int(offset)]
+        with self.conn() as conn:
+            raw = conn.execute(
+                f"""
+                SELECT id, name, barcode, unit, sell_price_incl_vat, vat_rate,
+                       stock, image_path, is_scale_product, critical_stock,
+                       category, sub_category,
+                       COUNT(*) OVER() AS _total
+                FROM products {where_sql}
+                ORDER BY name
+                LIMIT ? OFFSET ?
+                """,
+                query_params,
+            ).fetchall()
+        if not raw:
+            return [], 0
+        total = int(raw[0][-1])
+        rows = [r[:-1] for r in raw]  # _total sütununu çıkar
+        return rows, total
 
     def list_products_by_scope(self, *, scope: str = "ALL", group_name: str = "", category_name: str = ""):
         scope = (scope or "ALL").upper()
@@ -844,7 +951,7 @@ class DB:
             ).fetchall()
 
     def upsert_product_group(self, name: str, *, old_name: str = "", note: str = "") -> None:
-        name = (name or "").strip()
+        name = _to_upper_trim(name)
         old_name = (old_name or "").strip()
         if not name:
             raise ValueError("Grup adi bos olamaz")
@@ -893,8 +1000,8 @@ class DB:
         old_group_name: str = "",
         note: str = "",
     ) -> None:
-        name = (name or "").strip()
-        group_name = (group_name or "").strip()
+        name = _to_upper_trim(name)
+        group_name = _to_upper_trim(group_name)
         old_name = (old_name or "").strip()
         old_group_name = (old_group_name or "").strip()
         if not name:
