@@ -8,6 +8,7 @@ import threading
 import flet as ft
 
 from flet_pos.services.barcode import generate_ean13
+from flet_pos.services.file_picker import pick_image_file_path
 from flet_pos.services.pricing import compute_prices
 
 
@@ -496,6 +497,14 @@ class ProductsPage(ft.Container):
             except RuntimeError:
                 pass
 
+    def _run_ui_task(self, handler, *args, **kwargs):
+        if self.page is None:
+            return
+        try:
+            self.page.run_task(handler, *args, **kwargs)
+        except Exception:
+            pass
+
     def _open_dialog(self, dlg):
         try:
             if dlg not in self.page.overlay:
@@ -568,30 +577,24 @@ class ProductsPage(ft.Container):
         self._safe_update()
 
 
-
     def _pick_image(self, _e):
-        def _open_dialog():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                path = filedialog.askopenfilename(
-                    title="Urun Resmi Sec",
-                    filetypes=[
-                        ("Resim Dosyalari", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
-                        ("Tum Dosyalar", "*.*"),
-                    ],
-                )
-                root.destroy()
-                if path:
-                    self.selected_image_src = path
-                    self.img_preview.src = path
-                    self._safe_update()
-            except Exception as ex:
-                self._snack(f"Resim secilemedi: {ex}")
-        threading.Thread(target=_open_dialog, daemon=True).start()
+        self._run_ui_task(self._pick_image_async)
+
+    async def _pick_image_async(self):
+        try:
+            path = await pick_image_file_path(
+                self.page,
+                "Urun Resmi Sec",
+                initial_path=self.selected_image_src,
+                fallback_directory=self.media_dir,
+            )
+            if not path:
+                return
+            self.selected_image_src = path
+            self.img_preview.src = path
+            self._safe_update()
+        except Exception as ex:
+            self._snack(f"Resim secilemedi: {ex}")
 
     def _on_generate_barcode(self, _e):
         self.txt_barcode.value = generate_ean13("869")
@@ -661,7 +664,6 @@ class ProductsPage(ft.Container):
                 self._quick_search_timer.cancel()
         except Exception:
             pass
-        import threading
         self._quick_search_timer = threading.Timer(delay, self._refresh_quick_add_options_from_search)
         self._quick_search_timer.daemon = True
         self._quick_search_timer.start()
@@ -1544,7 +1546,6 @@ class ProductsPage(ft.Container):
                 self._search_timer.cancel()
         except Exception:
             pass
-        import threading
         self._search_timer = threading.Timer(delay, self.refresh_table)
         self._search_timer.daemon = True
         self._search_timer.start()
@@ -1555,7 +1556,6 @@ class ProductsPage(ft.Container):
                 self._search_timer.cancel()
         except Exception:
             pass
-        import threading
         self._search_timer = threading.Timer(delay, lambda: self.refresh_table(force_reload=force_reload))
         self._search_timer.daemon = True
         self._search_timer.start()

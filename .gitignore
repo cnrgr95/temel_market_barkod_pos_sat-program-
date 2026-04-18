@@ -37,6 +37,14 @@ backups/
 backups copy/
 *.log
 market_app_archive.zip
+build_*/
+dist_*/
+installer/*.exe
+tests/_tmp/
+pytest-cache-files-*/
+.pytest_cache/
+.ruff_cache/
+out/
 
 # DBs (except main db if you want to track it, but usually ignored)
 # We will track market.db manually if needed, but we ignore test ones

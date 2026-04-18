@@ -9,6 +9,7 @@ import flet as ft
 
 from flet_pos.services.pricing import compute_prices
 from flet_pos.services.async_runner import run_bg
+from flet_pos.services.file_picker import pick_image_file_path
 
 # Banknot değerleri (TL)
 _BANKNOTES = [1, 5, 10, 20, 50, 100, 200]
@@ -682,13 +683,20 @@ class POSPage(ft.Container):
             except RuntimeError:
                 pass
 
+    def _run_ui_task(self, handler, *args, **kwargs):
+        if self.page is None:
+            return
+        try:
+            self.page.run_task(handler, *args, **kwargs)
+        except Exception:
+            pass
+
     def schedule_refresh_products_grid(self, *, force_reload: bool = False, delay: float = 0.05):
         try:
             if self._grid_refresh_timer:
                 self._grid_refresh_timer.cancel()
         except Exception:
             pass
-        import threading
         self._grid_refresh_timer = threading.Timer(delay, lambda: self.refresh_products_grid(force_reload=force_reload))
         self._grid_refresh_timer.daemon = True
         self._grid_refresh_timer.start()
@@ -1239,22 +1247,14 @@ class POSPage(ft.Container):
             self._safe_update()
 
         def pick_image(_e):
-            def open_dialog():
+            async def open_dialog():
                 try:
-                    import tkinter as tk
-                    from tkinter import filedialog
-
-                    root = tk.Tk()
-                    root.withdraw()
-                    root.attributes("-topmost", True)
-                    path = filedialog.askopenfilename(
-                        title="Urun resmi sec",
-                        filetypes=[
-                            ("Resim Dosyalari", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"),
-                            ("Tum Dosyalar", "*.*"),
-                        ],
+                    path = await pick_image_file_path(
+                        self.page,
+                        "Urun resmi sec",
+                        initial_path=selected_image["path"],
+                        fallback_directory=self._media_dir,
                     )
-                    root.destroy()
                     if path:
                         selected_image["path"] = path
                         image_preview.src = path
@@ -1262,7 +1262,7 @@ class POSPage(ft.Container):
                 except Exception as ex:
                     self._snack(f"Resim secilemedi: {ex}")
 
-            threading.Thread(target=open_dialog, daemon=True).start()
+            self._run_ui_task(open_dialog)
 
         txt_price.on_change = lambda _: refresh_price_info()
         txt_vat.on_change = lambda _: refresh_price_info()

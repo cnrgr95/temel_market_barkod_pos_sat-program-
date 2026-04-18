@@ -16,6 +16,11 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(base, ignore_errors=True))
         return os.path.join(base, "market.db")
 
+    def _make_db(self, db_path: str | None = None) -> DB:
+        db = DB(db_path or self._temp_db_path())
+        self.addCleanup(db.close)
+        return db
+
     def test_legacy_schema_keeps_existing_product_sale_and_settings(self):
         db_path = self._temp_db_path()
         with sqlite3.connect(db_path) as conn:
@@ -55,7 +60,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
                 """
             )
 
-        db = DB(db_path)
+        db = self._make_db(db_path)
         product = db.get_product_by_barcode("8690000000010")
         self.assertIsNotNone(product)
         self.assertEqual(product[1], "Legacy Tea")
@@ -73,7 +78,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertEqual(float(item[3]), 40.0)
 
     def test_failed_sale_rolls_back_and_keeps_stock(self):
-        db = DB(self._temp_db_path())
+        db = self._make_db()
         db.upsert_product(
             barcode="8690000000027",
             name="Limited Stock",
@@ -108,7 +113,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
 
     def test_settings_and_backup_manager_copy_to_drive_folder(self):
         db_path = self._temp_db_path()
-        db = DB(db_path)
+        db = self._make_db(db_path)
         drive_dir = os.path.join(os.path.dirname(db_path), "Google Drive")
         backup_dir = os.path.join(os.path.dirname(db_path), "backups")
         os.makedirs(drive_dir, exist_ok=True)
@@ -134,7 +139,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertEqual(manager.interval_seconds, 300)
 
     def test_generated_barcode_registry_and_svg_output(self):
-        db = DB(self._temp_db_path())
+        db = self._make_db()
         barcode = generate_ean13("869")
 
         created = db.add_generated_barcode(barcode, label_name="Test Etiket", prefix="869", note="Deneme")
@@ -152,7 +157,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertIn(barcode, svg)
 
     def test_normalize_all_product_titles_upper_updates_existing_rows(self):
-        db = DB(self._temp_db_path())
+        db = self._make_db()
         db.upsert_product(barcode="8690000000102", name="Kahve", category="icecek", sub_category="sicak")
 
         with db.conn() as conn:
@@ -177,7 +182,7 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertEqual(row[2], "YESILLIK")
 
     def test_search_products_returns_match_for_partial_name_and_barcode(self):
-        db = DB(self._temp_db_path())
+        db = self._make_db()
         db.upsert_product(barcode="8690000000201", name="DOMATES SOS", category="GIDA")
         db.upsert_product(barcode="8690000000202", name="BIBER SALCASI", category="GIDA")
 
@@ -186,6 +191,22 @@ class DBUpdateSafetyTests(unittest.TestCase):
 
         self.assertTrue(any(r[2] == "8690000000201" for r in by_name))
         self.assertTrue(any(r[2] == "8690000000202" for r in by_barcode))
+
+    def test_db_close_blocks_reuse_and_releases_db_files(self):
+        db_path = self._temp_db_path()
+        db = self._make_db(db_path)
+        db.upsert_product(barcode="8690000000997", name="KAPANIS TEST")
+
+        db.close()
+
+        with self.assertRaises(RuntimeError):
+            db.conn()
+
+        for suffix in ("", "-wal", "-shm"):
+            path = f"{db_path}{suffix}" if suffix else db_path
+            if os.path.exists(path):
+                os.remove(path)
+        self.assertFalse(os.path.exists(db_path))
 
 
 if __name__ == "__main__":

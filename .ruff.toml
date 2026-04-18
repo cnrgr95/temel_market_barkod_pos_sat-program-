@@ -1,0 +1,4 @@
+exclude = [
+    "pytest-cache-files-*",
+    "tests/_tmp",
+]

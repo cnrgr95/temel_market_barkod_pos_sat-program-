@@ -4,15 +4,6 @@ import sqlite3
 import threading
 from datetime import datetime
 
-
-class _ClosingConnection(sqlite3.Connection):
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return super().__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.close()
-
-
 def _hash_password(password: str) -> str:
     """PBKDF2-HMAC-SHA256 ile sifre hashle."""
     salt = os.urandom(16)
@@ -45,10 +36,15 @@ class DB:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._local = threading.local()  # Thread-local kalici baglanti
+        self._conn_lock = threading.Lock()
+        self._connections: set[sqlite3.Connection] = set()
+        self._closed = False
         self._setup()
 
     def conn(self) -> sqlite3.Connection:
         """Thread-local kalici SQLite baglantisi dondurur. PRAGMA'lar sadece ilk baglantiida calisisir."""
+        if self._closed:
+            raise RuntimeError("Veritabani baglantisi kapatildi")
         c = getattr(self._local, "connection", None)
         if c is None:
             c = sqlite3.connect(self.db_path, timeout=15, check_same_thread=False)
@@ -60,7 +56,33 @@ class DB:
             c.execute("PRAGMA cache_size = -8000")
             c.execute("PRAGMA mmap_size = 67108864")
             self._local.connection = c
+            with self._conn_lock:
+                self._connections.add(c)
         return c
+
+    def close(self) -> None:
+        if self._closed:
+            return
+
+        self._closed = True
+        if getattr(self._local, "connection", None) is not None:
+            self._local.connection = None
+
+        with self._conn_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _setup(self) -> None:
         with self.conn() as conn:

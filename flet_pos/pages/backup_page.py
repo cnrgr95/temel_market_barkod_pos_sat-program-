@@ -6,6 +6,8 @@ from datetime import datetime
 
 import flet as ft
 
+from flet_pos.services.file_picker import pick_directory_path
+
 
 class BackupPage(ft.Container):
     def __init__(self, base_dir: str, backup_manager=None, db=None):
@@ -302,6 +304,14 @@ class BackupPage(ft.Container):
         except RuntimeError:
             pass
 
+    def _run_ui_task(self, handler, *args, **kwargs):
+        if self.page is None:
+            return
+        try:
+            self.page.run_task(handler, *args, **kwargs)
+        except Exception:
+            pass
+
     def _save_settings(self, _e):
         try:
             minutes = int(float((self.txt_interval_minutes.value or "120").replace(",", ".")))
@@ -336,30 +346,29 @@ class BackupPage(ft.Container):
         self._snack("Google Drive yolu kaydedildi", ft.Colors.GREEN_700)
 
     def _pick_local_dir(self, _e):
-        """tkinter ile yerel yedek klasoru sec (arka planda calisir)."""
-        def _pick():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                chosen = filedialog.askdirectory(title="Yedek Klasoru Sec")
-                root.destroy()
-                if chosen:
-                    self.backup_dir = chosen
-                    self.txt_local_dir.value = chosen
-                    os.makedirs(chosen, exist_ok=True)
-                    if self.backup_manager:
-                        self.backup_manager.set_backup_dir(chosen)
-                    if self.db:
-                        self.db.set_setting("local_backup_dir", chosen)
-                    self.refresh()
-                    self._snack(f"Yerel yedek klasoru: {chosen}", ft.Colors.GREEN_700)
-            except Exception as ex:
-                self._snack(f"Klasor Secilemedi: {ex}", ft.Colors.RED_600)
+        self._run_ui_task(self._pick_local_dir_async)
 
-        threading.Thread(target=_pick, daemon=True).start()
+    async def _pick_local_dir_async(self):
+        try:
+            chosen = await pick_directory_path(
+                self.page,
+                "Yedek Klasoru Sec",
+                initial_path=self.backup_dir,
+                fallback_directory=self.base_dir,
+            )
+            if not chosen:
+                return
+            self.backup_dir = chosen
+            self.txt_local_dir.value = chosen
+            os.makedirs(chosen, exist_ok=True)
+            if self.backup_manager:
+                self.backup_manager.set_backup_dir(chosen)
+            if self.db:
+                self.db.set_setting("local_backup_dir", chosen)
+            self.refresh()
+            self._snack(f"Yerel yedek klasoru: {chosen}", ft.Colors.GREEN_700)
+        except Exception as ex:
+            self._snack(f"Klasor secilemedi: {ex}", ft.Colors.RED_600)
 
     def _reset_local_dir(self, _e):
         self.backup_dir = os.path.join(self.base_dir, "backups")

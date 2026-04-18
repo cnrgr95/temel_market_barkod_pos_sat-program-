@@ -39,7 +39,6 @@ class UsersPage(ft.Container):
         self.sw_cash = ft.Switch(label="Kasa", value=False)
         self.sw_users = ft.Switch(label="Kullanicilar", value=False)
         self.sw_backup = ft.Switch(label="Yedekleme", value=False)
-        self.sw_hardware = ft.Switch(label="Donanim", value=False)
 
         self.btn_save = ft.ElevatedButton(
             "Kullanici Ekle",
@@ -102,7 +101,7 @@ class UsersPage(ft.Container):
                                         ft.Text("Yetkiler", size=13, weight=ft.FontWeight.W_600, color=ft.Colors.INDIGO_800),
                                         ft.Row([self.sw_discount, self.sw_price, self.sw_return, self.sw_reports, self.sw_sales_history], wrap=True),
                                         ft.Row([self.sw_products, self.sw_stock, self.sw_customers, self.sw_suppliers], wrap=True),
-                                        ft.Row([self.sw_cash, self.sw_users, self.sw_backup, self.sw_hardware], wrap=True),
+                                        ft.Row([self.sw_cash, self.sw_users, self.sw_backup], wrap=True),
                                     ],
                                     spacing=4,
                                 ),
@@ -135,7 +134,7 @@ class UsersPage(ft.Container):
         all_switches = [
             self.sw_discount, self.sw_price, self.sw_return, self.sw_reports, self.sw_sales_history,
             self.sw_products, self.sw_stock, self.sw_customers, self.sw_suppliers,
-            self.sw_cash, self.sw_users, self.sw_backup, self.sw_hardware,
+            self.sw_cash, self.sw_users, self.sw_backup,
         ]
         if role == "ADMIN":
             for sw in all_switches:
@@ -154,7 +153,6 @@ class UsersPage(ft.Container):
             self.sw_cash.value = True
             self.sw_users.value = False
             self.sw_backup.value = True
-            self.sw_hardware.value = False
         elif role == "KASIYER":
             # Kasiyer: sadece indirim, iade, müşteri görme, satış geçmişi
             self.sw_discount.value = True
@@ -169,7 +167,6 @@ class UsersPage(ft.Container):
             self.sw_cash.value = False
             self.sw_users.value = False
             self.sw_backup.value = False
-            self.sw_hardware.value = False
         self._safe_update()
 
     def _snack(self, text: str):
@@ -198,7 +195,6 @@ class UsersPage(ft.Container):
         self.sw_cash.value = False
         self.sw_users.value = False
         self.sw_backup.value = False
-        self.sw_hardware.value = False
         self.lbl_form_title.value = "Yeni Kullanici Ekle"
         self.lbl_form_title.color = ft.Colors.INDIGO_700
         self.btn_save.text = "Kullanici Ekle"
@@ -207,7 +203,7 @@ class UsersPage(ft.Container):
         self._safe_update()
 
     def _load_user_to_form(self, row):
-        uid, username, role, can_discount, can_price, can_return, can_reports, can_products, can_stock, can_customers, can_suppliers, can_cash, can_users, can_backup, can_hardware, can_sales_history = row
+        uid, username, role, can_discount, can_price, can_return, can_reports, can_products, can_stock, can_customers, can_suppliers, can_cash, can_users, can_backup, _can_hardware, can_sales_history = row
         self._editing_id = uid
         self.txt_username.value = username
         self.txt_username.read_only = True
@@ -225,7 +221,6 @@ class UsersPage(ft.Container):
         self.sw_cash.value = bool(can_cash)
         self.sw_users.value = bool(can_users)
         self.sw_backup.value = bool(can_backup)
-        self.sw_hardware.value = bool(can_hardware)
         self.sw_sales_history.value = bool(can_sales_history)
         self.lbl_form_title.value = f"Kullanici Duzenle: {username}"
         self.lbl_form_title.color = ft.Colors.ORANGE_700
@@ -257,7 +252,6 @@ class UsersPage(ft.Container):
                     can_cash=self.sw_cash.value,
                     can_users=self.sw_users.value,
                     can_backup=self.sw_backup.value,
-                    can_hardware=self.sw_hardware.value,
                     can_sales_history=self.sw_sales_history.value,
                 )
                 self._snack(f"{username} guncellendi")
@@ -280,7 +274,6 @@ class UsersPage(ft.Container):
                     can_cash=self.sw_cash.value,
                     can_users=self.sw_users.value,
                     can_backup=self.sw_backup.value,
-                    can_hardware=self.sw_hardware.value,
                     can_sales_history=self.sw_sales_history.value,
                 )
                 self._snack(f"{username} eklendi")
@@ -329,7 +322,7 @@ class UsersPage(ft.Container):
         rows = self.db.list_users()
         self.table.rows = []
         for r in rows:
-            uid, username, role, can_d, can_p, can_r, can_rep, can_products, can_stock, can_customers, can_suppliers, can_cash, can_users, can_backup, can_hardware, can_sales_history = r
+            uid, username, role, can_d, can_p, can_r, can_rep, can_products, can_stock, can_customers, can_suppliers, can_cash, can_users, can_backup, _can_hardware, can_sales_history = r
 
             def _yn(v):
                 return ft.Text("Evet", color=ft.Colors.GREEN_700, weight=ft.FontWeight.W_500) if v else ft.Text("Hayir", color=ft.Colors.BLUE_GREY_400)
@@ -352,8 +345,6 @@ class UsersPage(ft.Container):
                 modules.append("Kullanici")
             if can_backup:
                 modules.append("Yedek")
-            if can_hardware:
-                modules.append("Donanim")
             if can_sales_history:
                 modules.append("SatisGecmisi")
             modules_text = ", ".join(modules) if modules else "-"

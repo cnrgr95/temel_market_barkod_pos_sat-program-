@@ -12,7 +12,6 @@ from flet_pos.pages.backup_page import BackupPage
 from flet_pos.pages.barcode_page import BarcodePage
 from flet_pos.pages.cash_page import CashPage
 from flet_pos.pages.customers_page import CustomersPage
-from flet_pos.pages.hardware_page import HardwarePage
 from flet_pos.pages.pos_page import POSPage
 from flet_pos.pages.products_page import ProductsPage
 from flet_pos.pages.reports_page import ReportsPage
@@ -122,7 +121,6 @@ class FletMarketApp:
             "cash": lambda: CashPage(self.db),
             "users": lambda: UsersPage(self.db),
             "backup": lambda: BackupPage(self.base_dir, backup_manager=self.backup_manager, db=self.db),
-            "hardware": lambda: HardwarePage(),
         }
         # Create only POS page immediately; others are lazy-loaded on navigation
         self.pages["pos"] = self._page_factories["pos"]()
@@ -148,7 +146,6 @@ class FletMarketApp:
             ("Kasa", "cash", ft.Icons.ACCOUNT_BALANCE_WALLET),
             ("Kullanicilar", "users", ft.Icons.ADMIN_PANEL_SETTINGS),
             ("Yedekleme", "backup", ft.Icons.BACKUP),
-            ("Donanim", "hardware", ft.Icons.DEVICES_OTHER),
         ]
         if self.current_user and self.current_user.get("can_reports"):
             destinations.insert(5, ("Raporlar", "reports", ft.Icons.QUERY_STATS))
@@ -452,7 +449,6 @@ class FletMarketApp:
             "cash": "can_cash",
             "users": "can_users",
             "backup": "can_backup",
-            "hardware": "can_hardware",
             "reports": "can_reports",
             "sales_history": "can_sales_history",
         }
@@ -682,6 +678,11 @@ class FletMarketApp:
             import traceback
             traceback.print_exc()
         finally:
+            try:
+                if getattr(self, "db", None):
+                    self.db.close()
+            except Exception:
+                pass
             try:
                 self.page.window.destroy()
             except Exception:
