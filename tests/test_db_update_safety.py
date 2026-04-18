@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import unittest
 import uuid
+import zipfile
 
 from flet_pos.db import DB
 from flet_pos.services.barcode import ean13_svg, generate_ean13, is_valid_ean13
@@ -137,6 +138,30 @@ class DBUpdateSafetyTests(unittest.TestCase):
         self.assertTrue(manager.list_logs(5))
         manager.set_interval_minutes(5)
         self.assertEqual(manager.interval_seconds, 300)
+
+    def test_backup_manager_creates_zip_from_sqlite_snapshot(self):
+        db_path = self._temp_db_path()
+        db = self._make_db(db_path)
+        backup_dir = os.path.join(os.path.dirname(db_path), "backups")
+
+        db.upsert_product(
+            barcode="8690000000317",
+            name="ZIP TEST",
+            sell_price_incl_vat=25,
+            stock=3,
+        )
+
+        manager = BackupManager(
+            base_dir=os.path.dirname(db_path),
+            db_path=db_path,
+            backup_dir=backup_dir,
+        )
+        zip_path = manager.create_zip_backup(prefix="test")
+
+        self.assertTrue(os.path.exists(zip_path), zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            self.assertEqual(zf.namelist(), ["market.db"])
+            self.assertGreater(zf.getinfo("market.db").file_size, 0)
 
     def test_generated_barcode_registry_and_svg_output(self):
         db = self._make_db()

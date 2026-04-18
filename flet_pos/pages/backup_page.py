@@ -6,6 +6,7 @@ from datetime import datetime
 
 import flet as ft
 
+from flet_pos.services.async_runner import run_bg
 from flet_pos.services.file_picker import pick_directory_path
 
 
@@ -384,17 +385,32 @@ class BackupPage(ft.Container):
     def _backup_zip(self, _e):
         """Veritabanini ZIP olarak disa aktarir."""
         def _do_zip():
-            try:
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                zip_path = os.path.join(self.backup_dir, f"market_zip_{stamp}.zip")
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(self.db_path, arcname="market.db")
-                self.refresh()
-                self._snack(f"ZIP yedek alindi: market_zip_{stamp}.zip", ft.Colors.GREEN_700)
-            except Exception as ex:
-                self._snack(f"ZIP yedekleme hatasi: {ex}", ft.Colors.RED_600)
+            if self.backup_manager:
+                return self.backup_manager.create_zip_backup(prefix="manual")
 
-        threading.Thread(target=_do_zip, daemon=True).start()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_db_path = os.path.join(self.backup_dir, f"market_zip_{stamp}.db")
+            zip_path = os.path.join(self.backup_dir, f"market_zip_{stamp}.zip")
+            try:
+                self._sqlite_backup_copy(self.db_path, temp_db_path)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(temp_db_path, arcname="market.db")
+                return zip_path
+            finally:
+                try:
+                    if os.path.exists(temp_db_path):
+                        os.remove(temp_db_path)
+                except OSError:
+                    pass
+
+        def _done(zip_path: str):
+            self.refresh()
+            self._snack(f"ZIP yedek alindi: {os.path.basename(zip_path)}", ft.Colors.GREEN_700)
+
+        def _error(ex: Exception):
+            self._snack(f"ZIP yedekleme hatasi: {ex}", ft.Colors.RED_600)
+
+        run_bg(_do_zip, _done, _error, ui_host=self)
 
     def _detect_drive_dir(self, _e):
         if not self.backup_manager:

@@ -1,11 +1,45 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all
+
+
+def _dedupe_entries(entries):
+    unique = []
+    seen = set()
+    for entry in entries:
+        key = repr(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(entry)
+    return unique
+
+
+project_root = Path(SPECPATH)
 datas = [
-    ("assets\\temelmarket_icon.png", "assets"),
-    ("assets\\temelmarket.ico", "assets"),
+    (str(project_root / "assets" / "temelmarket_icon.png"), "assets"),
+    (str(project_root / "assets" / "temelmarket.ico"), "assets"),
+    (str(project_root / "installer" / "install_webview2.ps1"), "."),
 ]
 binaries = []
 hiddenimports = []
+
+for package_name in ("flet", "flet_desktop", "flet_web"):
+    package_datas, package_binaries, package_hiddenimports = collect_all(package_name)
+    datas.extend(package_datas)
+    binaries.extend(package_binaries)
+    hiddenimports.extend(
+        name
+        for name in package_hiddenimports
+        if name != "flet.testing" and not name.startswith("flet.testing.")
+    )
+
+datas = _dedupe_entries(datas)
+binaries = _dedupe_entries(binaries)
+hiddenimports = _dedupe_entries(hiddenimports)
+
 excludes = [
     "cookiecutter",
     "setuptools",
@@ -18,7 +52,7 @@ excludes = [
 
 a = Analysis(
     ["main.py"],
-    pathex=[],
+    pathex=[str(project_root)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -47,7 +81,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["assets\\temelmarket.ico"],
+    icon=[str(project_root / "assets" / "temelmarket.ico")],
 )
 coll = COLLECT(
     exe,

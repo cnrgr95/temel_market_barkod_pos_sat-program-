@@ -2,7 +2,7 @@
 ; Produces a professional installer with uninstall support (Apps & Features)
 
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.2"
+#define MyAppVersion "1.0.3"
 #endif
 
 #define MyAppName "Temel Market"
@@ -49,6 +49,8 @@ Name: "desktopicon"; Description: "Masaustu kisayolu olustur"; GroupDescription:
 [Files]
 Source: "{#MyDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "installer\install_webview2.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "installer\MicrosoftEdgeWebView2Setup.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "installer\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

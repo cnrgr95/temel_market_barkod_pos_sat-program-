@@ -36,6 +36,8 @@ venv.bak/
 backups/
 backups copy/
 *.log
+*.db-wal
+*.db-shm
 market_app_archive.zip
 build_*/
 dist_*/

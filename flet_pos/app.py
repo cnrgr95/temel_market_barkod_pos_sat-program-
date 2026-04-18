@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import re
 import urllib.error
@@ -19,25 +18,33 @@ from flet_pos.pages.sales_history_page import SalesHistoryPage
 from flet_pos.pages.stock_page import StockPage
 from flet_pos.pages.suppliers_page import SuppliersPage
 from flet_pos.pages.users_page import UsersPage
+from flet_pos.runtime_paths import get_runtime_paths
+from flet_pos.services.async_runner import run_bg
 from flet_pos.services.backup import BackupManager
 
 
 class FletMarketApp:
-    APP_VERSION = "V 1.0.2"
+    APP_VERSION = "V 1.0.3"
     RELEASES_REPO_URL = "https://github.com/cnrgr95/temel_market_barkod_pos_sat-program-"
     RELEASES_API_LATEST = "https://api.github.com/repos/cnrgr95/temel_market_barkod_pos_sat-program-/releases/latest"
 
     def __init__(self, page: ft.Page):
         self.page = page
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.db = DB(os.path.join(self.base_dir, "market.db"))
-        self.media_dir = os.path.join(self.base_dir, "product_images")
+        self.runtime_paths = get_runtime_paths()
+        self.install_dir = self.runtime_paths.install_dir
+        self.base_dir = self.runtime_paths.data_dir
+        self.db = DB(self.runtime_paths.db_path)
+        self.media_dir = self.runtime_paths.media_dir
         os.makedirs(self.media_dir, exist_ok=True)
         saved_backup_dir = self.db.get_setting("local_backup_dir", "") or ""
-        backup_dir = saved_backup_dir if saved_backup_dir and os.path.isdir(saved_backup_dir) else os.path.join(self.base_dir, "backups")
+        backup_dir = (
+            saved_backup_dir
+            if saved_backup_dir and os.path.isdir(saved_backup_dir)
+            else self.runtime_paths.backup_dir
+        )
         self.backup_manager = BackupManager(
             base_dir=self.base_dir,
-            db_path=os.path.join(self.base_dir, "market.db"),
+            db_path=self.runtime_paths.db_path,
             backup_dir=backup_dir,
             interval_seconds=int(self.db.get_setting("backup_interval_minutes", "120") or "120") * 60,
             google_drive_dir=self.db.get_setting("google_drive_backup_dir", ""),
@@ -77,21 +84,13 @@ class FletMarketApp:
     def _set_window_icon(self):
         """Uygulama penceresi/gorev cubugu simgesini ayarla."""
         candidates = []
-        if getattr(sys, "frozen", False):
-            base = getattr(sys, "_MEIPASS", "")
-            if base:
-                candidates.extend(
-                    [
-                        os.path.join(base, "assets", "temelmarket.ico"),
-                        os.path.join(base, "assets", "temelmarket_icon.png"),
-                    ]
-                )
-        candidates.extend(
-            [
-                os.path.join(self.base_dir, "assets", "temelmarket.ico"),
-                os.path.join(self.base_dir, "assets", "temelmarket_icon.png"),
-            ]
-        )
+        for assets_dir in self.runtime_paths.asset_dirs:
+            candidates.extend(
+                [
+                    os.path.join(assets_dir, "temelmarket.ico"),
+                    os.path.join(assets_dir, "temelmarket_icon.png"),
+                ]
+            )
         # Windows desktop için .ico daha güvenilir
         ico_first = [p for p in candidates if p.lower().endswith(".ico")]
         other = [p for p in candidates if not p.lower().endswith(".ico")]
@@ -107,6 +106,7 @@ class FletMarketApp:
         self._page_factories = {
             "pos": lambda: POSPage(
                 self.db,
+                media_dir=self.media_dir,
                 on_sale_completed=self._after_data_change,
                 current_user=self.current_user,
                 on_unknown_barcode=self._open_product_add_from_pos,
@@ -329,28 +329,26 @@ class FletMarketApp:
         return latest_version, release_url
 
     def _notify_update_on_login(self):
-        def _worker():
-            try:
-                latest, _release_url = self._fetch_latest_release_info_with_timeout(4)
-                if not self._is_newer_version(latest, self.APP_VERSION):
-                    return
-                msg = f"Guncelleme var: {latest} (Sistem: {self.APP_VERSION})"
-                try:
-                    self.page.snack_bar = ft.SnackBar(
-                        ft.Text(msg),
-                        open=True,
-                        behavior=ft.SnackBarBehavior.FLOATING,
-                        margin=ft.margin.only(right=16, bottom=16),
-                    )
-                except Exception:
-                    self.page.snack_bar = ft.SnackBar(ft.Text(msg), open=True)
-                self.page.update()
-            except Exception:
-                # Giris akisini asla bloklama
-                pass
+        def _load_latest_version():
+            latest, _release_url = self._fetch_latest_release_info_with_timeout(4)
+            return latest
 
-        import threading
-        threading.Thread(target=_worker, daemon=True).start()
+        def _show_update_notice(latest: str):
+            if not self._is_newer_version(latest, self.APP_VERSION):
+                return
+            msg = f"Guncelleme var: {latest} (Sistem: {self.APP_VERSION})"
+            try:
+                self.page.snack_bar = ft.SnackBar(
+                    ft.Text(msg),
+                    open=True,
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.margin.only(right=16, bottom=16),
+                )
+            except Exception:
+                self.page.snack_bar = ft.SnackBar(ft.Text(msg), open=True)
+            self.page.update()
+
+        run_bg(_load_latest_version, _show_update_notice, ui_host=self.page)
 
     def _open_update_confirm_dialog(self, latest: str, release_url: str):
         def _go_release(_e=None):

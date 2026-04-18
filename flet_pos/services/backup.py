@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -189,6 +190,26 @@ class BackupManager:
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
         if last_error:
             raise last_error
+
+    def create_zip_backup(self, prefix: str = "manual") -> str:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_db_path = os.path.join(self.backup_dir, f"market_zip_{stamp}.db")
+        zip_path = os.path.join(self.backup_dir, f"market_zip_{stamp}.zip")
+        try:
+            self._sqlite_backup_copy(self.db_path, temp_db_path)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(temp_db_path, arcname="market.db")
+            self._write_log("SUCCESS", f"{prefix}:zip", zip_path, "", "")
+            return zip_path
+        except Exception as ex:
+            self._write_log("ERROR", f"{prefix}:zip", zip_path, "", str(ex))
+            raise
+        finally:
+            try:
+                if os.path.exists(temp_db_path):
+                    os.remove(temp_db_path)
+            except OSError:
+                pass
 
     def backup_now(self, prefix: str = "manual", target_mode: str | None = None) -> BackupResult:
         target = self._normalize_target_mode(target_mode or self.target_mode)

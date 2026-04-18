@@ -16,8 +16,9 @@ _BANKNOTES = [1, 5, 10, 20, 50, 100, 200]
 
 
 class POSPage(ft.Container):
-    def __init__(self, db, on_sale_completed=None, current_user=None, on_unknown_barcode=None):
+    def __init__(self, db, media_dir: str, on_sale_completed=None, current_user=None, on_unknown_barcode=None):
         self.db = db
+        self._media_dir = media_dir
         self.on_sale_completed = on_sale_completed
         self.current_user = current_user or {}
         self.on_unknown_barcode = on_unknown_barcode
@@ -43,10 +44,6 @@ class POSPage(ft.Container):
         self._cats_cache: list[str] = []  # Kategori listesi cache
         self._scanner_buffer = ""
         self._last_key_time = 0
-        self._media_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "product_images",
-        )
         os.makedirs(self._media_dir, exist_ok=True)
         # Loading overlay (grid Stack içinde kullanılır)
         self._loading_overlay = ft.Container(
@@ -600,7 +597,7 @@ class POSPage(ft.Container):
 
     def _run_bg(self, fn, on_done, on_error=None):
         """DB işlemini arka planda çalıştır — UI thread'ini bloke etmez."""
-        run_bg(fn, on_done, on_error)
+        run_bg(fn, on_done, on_error, ui_host=self)
 
     def _set_grid_loading(self, loading: bool):
         """Grid üzerine yükleniyor overlay göster/gizle."""
